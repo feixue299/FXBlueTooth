@@ -1,0 +1,23 @@
+PODS:
+  - FXBlueTooth (0.1.0):
+    - SwiftyBeaver
+  - SwiftyBeaver (1.9.5)
+
+DEPENDENCIES:
+  - FXBlueTooth (from `../`)
+
+SPEC REPOS:
+  trunk:
+    - SwiftyBeaver
+
+EXTERNAL SOURCES:
+  FXBlueTooth:
+    :path: "../"
+
+SPEC CHECKSUMS:
+  FXBlueTooth: 51f0194f775ceb48358323c79f2dcf9032eb2577
+  SwiftyBeaver: 84069991dd5dca07d7069100985badaca7f0ce82
+
+PODFILE CHECKSUM: 1a1a1c0902c0ae9dc51d8c4fce886edde53ee408
+
+COCOAPODS: 1.11.2
