@@ -8,7 +8,7 @@
 
 Pod::Spec.new do |s|
   s.name             = 'FXBlueTooth'
-  s.version          = '0.2.0'
+  s.version          = '0.2.1'
   s.summary          = 'BlueTooth manager'
 
   s.homepage         = 'https://github.com/feixue299/FXBlueTooth'
