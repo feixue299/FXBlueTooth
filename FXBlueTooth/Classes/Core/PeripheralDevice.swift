@@ -76,7 +76,7 @@ public class PeripheralDevice: NSObject, PeripheralHandler, CBPeripheralDelegate
     
 }
 
-public extension PeripheralDevice {
+extension PeripheralDevice {
     
     open class Characteristic: NSObject, DiscoverCharacteristic {
         @objc
@@ -103,7 +103,7 @@ public extension PeripheralDevice {
         }
     }
     
-    class DeviceCharacteristicValue: NSObject, CharacteristicValue {
+    open class DeviceCharacteristicValue: NSObject, CharacteristicValue {
         public typealias Completion = (Result<[Data], Error>) -> Void
         public typealias SingleCompletion = (Result<Data, Error>) -> Void
         
