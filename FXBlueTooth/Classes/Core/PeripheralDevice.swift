@@ -78,7 +78,7 @@ public class PeripheralDevice: NSObject, PeripheralHandler, CBPeripheralDelegate
 
 public extension PeripheralDevice {
     
-    class Characteristic: NSObject, DiscoverCharacteristic {
+    open class Characteristic: NSObject, DiscoverCharacteristic {
         @objc
         public private(set) dynamic var writeCharacteristic: CBCharacteristic?
         @objc

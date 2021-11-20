@@ -10,8 +10,8 @@ import Foundation
 public class CharacteristicAdapter: NSObject {
     public typealias ReadyClousre = (PeripheralDevice.DeviceCharacteristicValue) -> Void
     
-    let characteristic: PeripheralDevice.Characteristic
-    let characteristicValue: PeripheralDevice.DeviceCharacteristicValue
+    public let characteristic: PeripheralDevice.Characteristic
+    public let characteristicValue: PeripheralDevice.DeviceCharacteristicValue
     
     private var keyValueObservation: [NSKeyValueObservation] = []
     private var readyForCommand = false {
@@ -25,7 +25,7 @@ public class CharacteristicAdapter: NSObject {
     }
     private var readyForCommandClosureGroup: [ReadyClousre] = []
     
-    init(characteristic: PeripheralDevice.Characteristic, characteristicValue: PeripheralDevice.DeviceCharacteristicValue) {
+    public init(characteristic: PeripheralDevice.Characteristic, characteristicValue: PeripheralDevice.DeviceCharacteristicValue) {
         self.characteristic = characteristic
         self.characteristicValue = characteristicValue
         super.init()

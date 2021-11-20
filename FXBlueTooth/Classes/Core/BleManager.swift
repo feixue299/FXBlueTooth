@@ -47,7 +47,7 @@ public class PeripheralInfo: Equatable {
 public class BleManager {
     
     public typealias Handler = (Result<CBPeripheral, BleManagerError>) -> Void
-    let centralManager: CentralManager
+    public let centralManager: CentralManager
     
     public init(options: [String : Any]? = nil) {
         centralManager = CentralManager(options: options)
@@ -66,15 +66,15 @@ public class BleManager {
     }
 }
 
-extension BleManager {
+public extension BleManager {
     class CentralManager: NSObject, CBCentralManagerDelegate {
         
-        let centralManager: CBCentralManager
-        let multiDelegate = CentralManagerMultiDelegate()
+        public let centralManager: CBCentralManager
+        public let multiDelegate = CentralManagerMultiDelegate()
         private var command: BleManagerCommand?
         private var handler: Handler?
         private var discoverPeripheral: [PeripheralInfo] = []
-        private(set) var restorePeripheral: [CBPeripheral] = []
+        public private(set) var restorePeripheral: [CBPeripheral] = []
         
         init(options: [String : Any]? = nil) {
             centralManager = CBCentralManager(delegate: multiDelegate, queue: nil, options: options)
@@ -118,7 +118,7 @@ extension BleManager {
             }
         }
         
-        func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        public func centralManagerDidUpdateState(_ central: CBCentralManager) {
             switch central.state {
             case .unknown:
                 handlerComplete(.failure(.centralStateError(reason: .unknown)))
@@ -137,12 +137,12 @@ extension BleManager {
             }
         }
         
-        func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        public func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
             guard let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] else { return }
             restorePeripheral = peripherals
         }
         
-        func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
             if let peripheralInfo = discoverPeripheral.first(where: { $0.peripheral == peripheral }) {
                 peripheralInfo.advertisementData = advertisementData
                 peripheralInfo.rssi = RSSI
@@ -164,16 +164,16 @@ extension BleManager {
             }
         }
         
-        func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
             handlerComplete(.success(peripheral))
             command?.handle?.peripheral = peripheral
         }
         
-        func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
             handlerComplete(.failure(.centralConnectError(reason: .failToConnect(error))))
         }
         
-        func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
             bleLogger.debug("断开连接成功:\(peripheral.name ?? "")")
             if let error = error {
                 bleLogger.error(error)
