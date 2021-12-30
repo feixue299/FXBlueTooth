@@ -8,23 +8,6 @@
 import Foundation
 import CoreBluetooth
 
-public enum CheckResponseResult {
-    /// 匹配成功
-    case success(data: [Data])
-    /// 匹配失败
-    case failure(error: Error)
-    /// 继续匹配
-    case goon(data: [Data])
-    /// 长连接
-    case longConnection(data: [Data])
-}
-
-public protocol PeripheralOperationCommand {
-    var cmdData: Data { get }
-    func checkResponse(_ dataGroup: [Data], data: Data) -> CheckResponseResult
-    func filterData(_ data: Data) -> Data?
-}
-
 public class PeripheralDevice: NSObject, PeripheralHandler, CBPeripheralDelegate {
     
     private var command: PeripheralCommand?
@@ -141,7 +124,8 @@ extension PeripheralDevice {
         }
         
         private func writeData(_ write: CBCharacteristic, _ option: PeripheralOperationCommand, _ peripheral: CBPeripheral) {
-            let bleMaxLength = 20
+            let length = option.getLengthProtocol()
+            
             let type: CBCharacteristicWriteType
             if write.properties.contains(.writeWithoutResponse) {
                 type = .withoutResponse
@@ -154,9 +138,10 @@ extension PeripheralDevice {
             bleLogger.debug("本次指令总长度:\(data.count)")
             while data.count > 0 {
                 let sendData: Data
-                if data.count >= bleMaxLength {
-                    sendData = data.prefix(bleMaxLength)
-                    data.removeFirst(bleMaxLength)
+                let currentLength = length.currentLength()
+                if data.count >= currentLength {
+                    sendData = data.prefix(currentLength)
+                    data.removeFirst(currentLength)
                 } else {
                     sendData = data
                     data.removeAll()
