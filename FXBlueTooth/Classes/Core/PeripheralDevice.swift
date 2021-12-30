@@ -171,7 +171,7 @@ extension PeripheralDevice {
         
         private func startTimer() {
             clearTimer()
-            timeOutTimer = Timer.scheduledTimer(timeInterval: 20, target: self, selector: #selector(timeout), userInfo: nil, repeats: false)
+            timeOutTimer = Timer.scheduledTimer(timeInterval: self.command?.timeOutInterval ?? 20, target: self, selector: #selector(timeout), userInfo: nil, repeats: false)
         }
         
         private func clearTimer() {
@@ -189,7 +189,7 @@ extension PeripheralDevice {
             } else if let value = readCharacteristic?.value {
                 __handlerValue(data: value)
             } else {
-                bleLogger.info("虚空区域")
+                
             }
         }
         
