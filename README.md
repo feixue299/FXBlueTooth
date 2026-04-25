@@ -7,6 +7,60 @@
 
 基于 CoreBluetooth 封装的 iOS 蓝牙管理库，提供扫描、连接、特征值读写等完整流程的链式调用接口。
 
+## 架构设计
+
+### 整体分层
+
+```
+┌─────────────────────────────────────────────┐
+│               业务层（你的代码）               │
+├─────────────────────────────────────────────┤
+│         BleManager  /  PeripheralDevice      │  ← 统一入口，DSL 风格命令
+├──────────────────┬──────────────────────────┤
+│  CentralManager  │  DeviceCharacteristicValue│  ← 核心执行单元
+├──────────────────┴──────────────────────────┤
+│   MultiDelegate（Central / Peripheral）      │  ← 多播代理层
+├─────────────────────────────────────────────┤
+│              CoreBluetooth                   │  ← 系统框架
+└─────────────────────────────────────────────┘
+```
+
+### 核心模块职责
+
+**BleManager / BleManagerCommand**
+扫描和连接的统一入口。通过 `BleManagerCommandItem` 枚举以 DSL 风格组装命令，避免大量可选参数。内部的 `CentralManager` 持有 `CBCentralManager`，并将所有 delegate 回调通过 `CentralManagerMultiDelegate` 广播出去。
+
+**PeripheralDevice / PeripheralCommand**
+连接成功后的外设操作入口。负责服务发现 → 特征值发现的完整流程，并将结果分发给注册的 `DiscoverCharacteristic` 和 `CharacteristicValue` 处理器。
+
+**MultiDelegate（多播代理）**
+`CentralManagerMultiDelegate` 和 `PeripheralMultiDelegate` 均通过弱引用数组持有多个 delegate，将系统回调广播给所有注册者，解决 CoreBluetooth 只支持单 delegate 的限制。`CBPeripheral` 的 `multiDelegate` 通过关联对象（Associated Object）动态绑定，不侵入原有 delegate 链。
+
+**CharacteristicAdapter**
+连接 `Characteristic`（特征值描述）和 `DeviceCharacteristicValue`（数据收发）的桥梁。通过 KVO 监听读写特征值的发现状态，两者均就绪后自动触发回调，业务层无需手动轮询。
+
+**DeviceCharacteristicValue**
+指令收发的核心执行单元，负责：
+- 按 `PeripheralCommandLengthProtocol` 策略分包发送
+- 通过 `filterData` 过滤无关数据包
+- 通过 `checkResponse` 校验响应完整性（支持单包/多包/长连接三种模式）
+- 超时管理（Timer）
+
+**PeripheralOperationCommand（指令协议）**
+业务层通过实现此协议描述一条具体指令，只需关注"发什么"和"怎么判断收完了"，分包、超时、重试等基础设施由框架统一处理。
+
+**CheckResponseResult（响应状态机）**
+四种状态驱动数据接收流程：
+- `success` — 数据完整，结束任务
+- `failure` — 校验失败，结束任务
+- `goon` — 数据不完整，继续等待并重置超时
+- `longConnection` — 长连接推送，回调但不结束任务
+
+**BlueToothTaskModel / BlueToothAnyTaskModel**
+将指令、解析逻辑、完成回调封装为一个可复用的任务对象。`BlueToothAnyTaskModel` 通过类型擦除将泛型任务统一为 `Any`，便于放入任务队列统一调度。
+
+---
+
 ## 功能特性
 
 - 扫描外设，支持自定义过滤规则
