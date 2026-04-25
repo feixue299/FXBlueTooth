@@ -5,7 +5,7 @@
 //  Created by mac on 2021/7/31.
 //
 
-import UIKit
+import Foundation
 
 @objc
 @objcMembers
