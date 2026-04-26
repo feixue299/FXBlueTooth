@@ -1,6 +1,4 @@
 // swift-tools-version:5.5
-// The swift-tools-version declares the minimum version of Swift required to build this package.
-
 import PackageDescription
 
 let package = Package(
@@ -10,15 +8,9 @@ let package = Package(
         .macOS(.v10_15)
     ],
     products: [
-        .library(
-            name: "FXBlueTooth",
-            targets: ["FXBlueTooth"]),
-        .library(
-            name: "FXBlueToothDSL",
-            targets: ["FXBlueTooth"]),
-        .library(
-            name: "FXBlueToothAsync",
-            targets: ["FXBlueToothAsync"]),
+        .library(name: "FXBlueTooth", targets: ["FXBlueTooth"]),
+        .library(name: "FXBlueToothDSL", targets: ["FXBlueTooth"]),
+        .library(name: "FXBlueToothAsync", targets: ["FXBlueToothAsync"]),
     ],
     dependencies: [
         .package(url: "https://github.com/SwiftyBeaver/SwiftyBeaver.git", from: "1.9.5"),
@@ -32,5 +24,9 @@ let package = Package(
             name: "FXBlueToothAsync",
             dependencies: [],
             path: "FXBlueToothAsync"),
+        .testTarget(
+            name: "FXBlueToothAsyncTests",
+            dependencies: ["FXBlueToothAsync"],
+            path: "Tests/FXBlueToothAsyncTests"),
     ]
 )

@@ -4,7 +4,9 @@ import CoreBluetooth
 @available(iOS 13.0, macOS 10.15, *)
 public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
-    private var central: CBCentralManager!
+    // 使用 protocol 类型，允许测试注入 MockCentralManager
+    var central: any CentralManagerProtocol
+
     private var stateWaiters: [CheckedContinuation<Void, Error>] = []
 
     private var scanContinuation: CheckedContinuation<AsyncPeripheral, Error>?
@@ -19,14 +21,26 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
     private var eventContinuation: AsyncStream<AsyncConnectionEvent>.Continuation?
 
+    // MARK: - Init
+
     public override init() {
+        let cm = CBCentralManager()
+        self.central = cm
         super.init()
-        central = CBCentralManager(delegate: self, queue: nil)
+        cm.delegate = self
     }
 
     public init(options: [String: Any]? = nil) {
+        let cm = CBCentralManager(delegate: nil, queue: nil, options: options)
+        self.central = cm
         super.init()
-        central = CBCentralManager(delegate: self, queue: nil, options: options)
+        cm.delegate = self
+    }
+
+    /// 测试专用初始化，注入 MockCentralManager
+    init(central: any CentralManagerProtocol) {
+        self.central = central
+        super.init()
     }
 
     // MARK: - State
@@ -39,20 +53,9 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
     // MARK: - Scan & Connect
 
-    /// 扫描设备，在闭包中处理每个发现的设备
-    /// 闭包返回 ScanAction：
-    /// - .skip：跳过，继续扫描
-    /// - .connect：连接该设备，停止扫描并返回已连接的设备
-    ///
-    /// 使用示例:
-    /// ```
-    /// let device = try await manager.scan(request) { discovered in
-    ///     if discovered.peripheral.name == "MyDevice" {
-    ///         return .connect  // 连接这个设备
-    ///     }
-    ///     return .skip  // 继续扫描
-    /// }
-    /// ```
+    /// 扫描设备，闭包返回 ScanAction 控制流程
+    /// - `.skip`：跳过，继续扫描
+    /// - `.connect`：连接该设备，停止扫描并返回已连接的设备
     public func scan(
         _ request: AsyncScanRequest = AsyncScanRequest(),
         onDiscovered: @escaping (AsyncDiscoveredPeripheral) async throws -> ScanAction
@@ -74,31 +77,6 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
                 self.central.stopScan()
                 self.scanContinuation = nil
                 self.scanHandler = nil
-            }
-        })
-    }
-
-    /// 从扫描中连接设备（在 scan 的闭包中调用）
-    /// 成功连接会停止扫描并返回已连接的设备
-    public func connect(_ discovered: AsyncDiscoveredPeripheral, timeout: TimeInterval = 15) async throws -> AsyncPeripheral {
-        guard pendingConnectContinuation == nil else {
-            throw AsyncBleClientError.busy
-        }
-
-        return try await withTaskCancellationHandler(operation: {
-            try await ensurePoweredOn()
-
-            return try await withCheckedThrowingContinuation { continuation in
-                self.pendingConnectContinuation = continuation
-                self.pendingConnectPeripheral = discovered.peripheral
-
-                self.central.stopScan()
-                self.central.connect(discovered.peripheral, options: nil)
-                self.scheduleConnectTimeout(timeout)
-            }
-        }, onCancel: {
-            Task {
-                self.pauseConnectForTaskCancellation()
             }
         })
     }
@@ -151,14 +129,12 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
     // MARK: - Events
 
-    /// 获取连接事件流
+    /// 获取连接/断开事件流
     public func connectionEvents() -> AsyncStream<AsyncConnectionEvent> {
         AsyncStream { continuation in
             self.eventContinuation = continuation
             continuation.onTermination = { [weak self] _ in
-                Task {
-                    self?.eventContinuation = nil
-                }
+                Task { self?.eventContinuation = nil }
             }
         }
     }
@@ -169,9 +145,36 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         scanHandler = nil
     }
 
-    // MARK: - CBCentralManagerDelegate
+    // MARK: - CBCentralManagerDelegate (转发到可测试的 handle 方法)
 
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        handleStateUpdate()
+    }
+
+    public func centralManager(
+        _ central: CBCentralManager,
+        didDiscover peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
+        handleDidDiscover(peripheral: peripheral, advertisementData: advertisementData, rssi: RSSI)
+    }
+
+    public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        handleDidConnect(peripheral: peripheral)
+    }
+
+    public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        handleDidFailToConnect(peripheral: peripheral, error: error)
+    }
+
+    public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        handleDidDisconnect(peripheral: peripheral, error: error)
+    }
+
+    // MARK: - Internal Handlers（可在测试中直接调用）
+
+    func handleStateUpdate() {
         switch central.state {
         case .poweredOn:
             stateWaiters.forEach { $0.resume(returning: ()) }
@@ -183,34 +186,27 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         }
     }
 
-    public func centralManager(
-        _ central: CBCentralManager,
-        didDiscover peripheral: CBPeripheral,
-        advertisementData: [String: Any],
-        rssi RSSI: NSNumber
-    ) {
-        let discovered = AsyncDiscoveredPeripheral(peripheral: peripheral, advertisementData: advertisementData, rssi: RSSI)
+    func handleDidDiscover(peripheral: CBPeripheral, advertisementData: [String: Any], rssi: NSNumber) {
+        let discovered = AsyncDiscoveredPeripheral(peripheral: peripheral, advertisementData: advertisementData, rssi: rssi)
 
         Task {
             do {
                 let action = try await scanHandler?(discovered) ?? .skip
-                
+
                 switch action {
                 case .skip:
-                    // 继续扫描，不做任何操作
                     break
                 case .connect:
-                    // 连接该设备
                     central.stopScan()
                     do {
-                        let connectedPeripheral = try await self.connectDirectly(peripheral, timeout: 15)
-                        self.scanContinuation?.resume(returning: connectedPeripheral)
-                        self.scanContinuation = nil
-                        self.scanHandler = nil
+                        let connectedPeripheral = try await connectDirectly(peripheral, timeout: 15)
+                        scanContinuation?.resume(returning: connectedPeripheral)
+                        scanContinuation = nil
+                        scanHandler = nil
                     } catch {
-                        self.scanContinuation?.resume(throwing: error)
-                        self.scanContinuation = nil
-                        self.scanHandler = nil
+                        scanContinuation?.resume(throwing: error)
+                        scanContinuation = nil
+                        scanHandler = nil
                     }
                 }
             } catch {
@@ -219,7 +215,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         }
     }
 
-    public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    func handleDidConnect(peripheral: CBPeripheral) {
         clearConnectTimeout()
         central.stopScan()
         pendingConnectPeripheral = nil
@@ -231,25 +227,17 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         eventContinuation?.yield(.connected(peripheral))
     }
 
-    public func centralManager(
-        _ central: CBCentralManager,
-        didFailToConnect peripheral: CBPeripheral,
-        error: Error?
-    ) {
+    func handleDidFailToConnect(peripheral: CBPeripheral, error: Error?) {
         clearConnectTimeout()
         central.stopScan()
         pendingConnectPeripheral = nil
 
-        let error = error ?? NSError(domain: "BLE", code: -1, userInfo: [NSLocalizedDescriptionKey: "Connect failed"])
-        pendingConnectContinuation?.resume(throwing: AsyncBleClientError.connectFailed(peripheral, error))
+        let err = error ?? NSError(domain: "BLE", code: -1, userInfo: [NSLocalizedDescriptionKey: "Connect failed"])
+        pendingConnectContinuation?.resume(throwing: AsyncBleClientError.connectFailed(peripheral, err))
         pendingConnectContinuation = nil
     }
 
-    public func centralManager(
-        _ central: CBCentralManager,
-        didDisconnectPeripheral peripheral: CBPeripheral,
-        error: Error?
-    ) {
+    func handleDidDisconnect(peripheral: CBPeripheral, error: Error?) {
         eventContinuation?.yield(.disconnected(peripheral, error))
 
         guard waitingDisconnectIdentifier == peripheral.identifier else { return }
@@ -265,7 +253,6 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
     // MARK: - Private Helpers
 
-    /// 内部连接方法，用于 scan 中的连接（不检查 busy）
     private func connectDirectly(_ peripheral: CBPeripheral, timeout: TimeInterval = 15) async throws -> AsyncPeripheral {
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
@@ -276,13 +263,11 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
                 self.scheduleConnectTimeout(timeout)
             }
         }, onCancel: {
-            Task {
-                self.pauseConnectForTaskCancellation()
-            }
+            Task { self.pauseConnectForTaskCancellation() }
         })
     }
 
-    private func ensurePoweredOn() async throws {
+    func ensurePoweredOn() async throws {
         if central.state == .poweredOn { return }
 
         try await withCheckedThrowingContinuation { continuation in

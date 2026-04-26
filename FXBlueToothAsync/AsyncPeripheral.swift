@@ -1,11 +1,12 @@
 import Foundation
 import CoreBluetooth
 
-/// 已连接的设备对象
+/// 已连接的设备对象，提供所有 I/O 操作
 @available(iOS 13.0, macOS 10.15, *)
 public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
 
-    public let peripheral: CBPeripheral
+    // 内部使用 Protocol 类型，允许测试注入 MockPeripheral
+    let _peripheral: any PeripheralProtocol
 
     private var discoverServicesContinuation: CheckedContinuation<[CBService], Error>?
     private var discoverCharacteristicsContinuations: [CBUUID: CheckedContinuation<[CBCharacteristic], Error>] = [:]
@@ -13,10 +14,19 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
     private var writeContinuations: [CBUUID: CheckedContinuation<Void, Error>] = [:]
     private var notifyContinuations: [CBUUID: AsyncThrowingStream<Data, Error>.Continuation] = [:]
 
+    // MARK: - Init
+
     public init(peripheral: CBPeripheral) {
-        self.peripheral = peripheral
+        self._peripheral = peripheral
         super.init()
-        self.peripheral.delegate = self
+        peripheral.peripheralDelegate = self
+    }
+
+    /// 测试专用初始化，注入 MockPeripheral
+    init(peripheral: any PeripheralProtocol) {
+        self._peripheral = peripheral
+        super.init()
+        peripheral.peripheralDelegate = self
     }
 
     // MARK: - Service & Characteristic Discovery
@@ -33,7 +43,7 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         return try await runWithTimeout(timeout) {
             try await withCheckedThrowingContinuation { continuation in
                 self.discoverServicesContinuation = continuation
-                self.peripheral.discoverServices(serviceUUIDs)
+                self._peripheral.discoverServices(serviceUUIDs)
             }
         }
     }
@@ -51,7 +61,7 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         return try await runWithTimeout(timeout) {
             try await withCheckedThrowingContinuation { continuation in
                 self.discoverCharacteristicsContinuations[service.uuid] = continuation
-                self.peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
+                self._peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
             }
         }
     }
@@ -70,7 +80,7 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         return try await runWithTimeout(timeout) {
             try await withCheckedThrowingContinuation { continuation in
                 self.readContinuations[characteristic.uuid] = continuation
-                self.peripheral.readValue(for: characteristic)
+                self._peripheral.readValue(for: characteristic)
             }
         }
     }
@@ -83,7 +93,7 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         timeout: TimeInterval? = nil
     ) async throws {
         if type == .withoutResponse {
-            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+            _peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
             return
         }
 
@@ -94,7 +104,7 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         try await runWithTimeout(timeout) {
             try await withCheckedThrowingContinuation { continuation in
                 self.writeContinuations[characteristic.uuid] = continuation
-                self.peripheral.writeValue(data, for: characteristic, type: .withResponse)
+                self._peripheral.writeValue(data, for: characteristic, type: .withResponse)
             }
         }
     }
@@ -108,41 +118,62 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
     ) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream(Data.self, bufferingPolicy: bufferingPolicy) { continuation in
             self.notifyContinuations[characteristic.uuid] = continuation
-            self.peripheral.setNotifyValue(true, for: characteristic)
+            self._peripheral.setNotifyValue(true, for: characteristic)
 
             continuation.onTermination = { [weak self] _ in
                 Task {
                     self?.notifyContinuations.removeValue(forKey: characteristic.uuid)
-                    self?.peripheral.setNotifyValue(false, for: characteristic)
+                    self?._peripheral.setNotifyValue(false, for: characteristic)
                 }
             }
         }
     }
 
-    // MARK: - CBPeripheralDelegate
+    // MARK: - CBPeripheralDelegate (转发到 handle 方法)
 
-    public func peripheral(_ peripheral: CBPeripheral,
-                           didDiscoverServices error: Error?) {
-        let services = peripheral.services ?? []
-
-        if let error = error {
-            discoverServicesContinuation?.resume(throwing: AsyncBleClientError.operationFailed(.discoverServices, error))
-        } else {
-            discoverServicesContinuation?.resume(returning: services)
-        }
-
-        discoverServicesContinuation = nil
+    public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        handleDidDiscoverServices(error: error)
     }
 
     public func peripheral(_ peripheral: CBPeripheral,
                            didDiscoverCharacteristicsFor service: CBService,
                            error: Error?) {
-        guard let continuation = discoverCharacteristicsContinuations.removeValue(forKey: service.uuid) else {
-            return
+        handleDidDiscoverCharacteristics(for: service, error: error)
+    }
+
+    public func peripheral(_ peripheral: CBPeripheral,
+                           didUpdateValueFor characteristic: CBCharacteristic,
+                           error: Error?) {
+        handleDidUpdateValue(for: characteristic, error: error)
+    }
+
+    public func peripheral(_ peripheral: CBPeripheral,
+                           didWriteValueFor characteristic: CBCharacteristic,
+                           error: Error?) {
+        handleDidWriteValue(for: characteristic, error: error)
+    }
+
+    public func peripheral(_ peripheral: CBPeripheral,
+                           didUpdateNotificationStateFor characteristic: CBCharacteristic,
+                           error: Error?) {
+        handleDidUpdateNotificationState(for: characteristic, error: error)
+    }
+
+    // MARK: - Internal Handlers（可在测试中直接调用）
+
+    func handleDidDiscoverServices(error: Error?) {
+        let services = _peripheral.services ?? []
+        if let error = error {
+            discoverServicesContinuation?.resume(throwing: AsyncBleClientError.operationFailed(.discoverServices, error))
+        } else {
+            discoverServicesContinuation?.resume(returning: services)
         }
+        discoverServicesContinuation = nil
+    }
 
+    func handleDidDiscoverCharacteristics(for service: CBService, error: Error?) {
+        guard let continuation = discoverCharacteristicsContinuations.removeValue(forKey: service.uuid) else { return }
         let characteristics = service.characteristics ?? []
-
         if let error = error {
             continuation.resume(throwing: AsyncBleClientError.operationFailed(.discoverCharacteristics, error))
         } else {
@@ -150,16 +181,13 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         }
     }
 
-    public func peripheral(_ peripheral: CBPeripheral,
-                           didUpdateValueFor characteristic: CBCharacteristic,
-                           error: Error?) {
+    func handleDidUpdateValue(for characteristic: CBCharacteristic, error: Error?) {
         // 读操作
         if let continuation = readContinuations.removeValue(forKey: characteristic.uuid) {
             if let error = error {
                 continuation.resume(throwing: AsyncBleClientError.operationFailed(.readValue, error))
             } else {
-                let data = characteristic.value ?? Data()
-                continuation.resume(returning: data)
+                continuation.resume(returning: characteristic.value ?? Data())
             }
         }
 
@@ -169,19 +197,13 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
                 notifyContinuation.finish(throwing: AsyncBleClientError.operationFailed(.notifications, error))
                 notifyContinuations.removeValue(forKey: characteristic.uuid)
             } else {
-                let data = characteristic.value ?? Data()
-                notifyContinuation.yield(data)
+                notifyContinuation.yield(characteristic.value ?? Data())
             }
         }
     }
 
-    public func peripheral(_ peripheral: CBPeripheral,
-                           didWriteValueFor characteristic: CBCharacteristic,
-                           error: Error?) {
-        guard let continuation = writeContinuations.removeValue(forKey: characteristic.uuid) else {
-            return
-        }
-
+    func handleDidWriteValue(for characteristic: CBCharacteristic, error: Error?) {
+        guard let continuation = writeContinuations.removeValue(forKey: characteristic.uuid) else { return }
         if let error = error {
             continuation.resume(throwing: AsyncBleClientError.operationFailed(.writeValue, error))
         } else {
@@ -189,9 +211,7 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         }
     }
 
-    public func peripheral(_ peripheral: CBPeripheral,
-                           didUpdateNotificationStateFor characteristic: CBCharacteristic,
-                           error: Error?) {
+    func handleDidUpdateNotificationState(for characteristic: CBCharacteristic, error: Error?) {
         if let error = error {
             if let continuation = notifyContinuations.removeValue(forKey: characteristic.uuid) {
                 continuation.finish(throwing: AsyncBleClientError.operationFailed(.notifications, error))
@@ -201,12 +221,10 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
 
     // MARK: - Helper
 
-    private func runWithTimeout<T>(_ timeout: TimeInterval?, _ operation: () async throws -> T) async throws -> T {
+    private func runWithTimeout<T>(_ timeout: TimeInterval?, _ operation: @escaping () async throws -> T) async throws -> T {
         if let timeout = timeout, timeout > 0 {
             return try await withThrowingTaskGroup(of: T.self) { group in
-                group.addTask {
-                    return try await operation()
-                }
+                group.addTask { return try await operation() }
                 group.addTask {
                     let nano = UInt64(timeout * 1_000_000_000)
                     try await Task.sleep(nanoseconds: nano)
