@@ -7,15 +7,44 @@
 
 基于 CoreBluetooth 封装的 iOS 蓝牙管理库，提供扫描、连接、特征值读写等完整流程的链式调用接口。
 
-## 双库设计（进行中）
+## 双库设计
 
-- `FXBlueToothDSL`：现有 DSL 风格 API（回调模型，iOS 10+）。
-- `FXBlueToothAsync`：结构化并发风格 API（`async/await`，iOS 13+）。
+两种 API 风格可共存，根据项目需求选择：
 
-当前仓库已开始实现双库发布入口：
+### 1. FXBlueToothAsync（推荐用于新项目）
+**结构化并发风格** - `async/await` 原生支持，代码更简洁、任务可取消
 
-- Swift Package 新增 product：`FXBlueToothDSL`、`FXBlueToothAsync`。
-- CocoaPods 新增 spec：`FXBlueToothAsync.podspec`。
+```swift
+// 扫描 → 连接 → 发现 → 读写，一行一行
+let manager = AsyncBleManager()
+let scanStream = manager.scan()
+
+for try await discovered in scanStream {
+    if discovered.peripheral.name == "MyDevice" {
+        let connected = try await manager.connect(discovered)
+        let services = try await connected.discoverServices()
+        let chars = try await connected.discoverCharacteristics(for: services[0])
+        let data = try await connected.readValue(for: chars[0])
+        break
+    }
+}
+```
+
+**特点：**
+- 零依赖，纯 CoreBluetooth 封装
+- 所有操作都支持 Task 取消
+- 类型安全的链式调用
+- iOS 13.0+ / macOS 10.15+
+
+👉 [FXBlueToothAsync 文档](FXBlueToothAsync/README.md)
+
+### 2. FXBlueToothDSL（现有 API）
+**命令式 DSL 风格** - 回调模型，适合长期维护的项目
+
+iOS 10+ 支持，更多历史项目兼容性。
+
+- Swift Package 支持两个 product：`FXBlueToothDSL`、`FXBlueToothAsync`
+- CocoaPods 分别提供：`FXBlueTooth`（DSL）、`FXBlueToothAsync`（Async）
 
 ## 架构设计
 
@@ -162,6 +191,8 @@ func example(asyncManager: AsyncBleManager) async {
 - 不依赖 `FXBlueTooth` 的 `BleManager` / `BleManagerCommandItem`。
 - 通过 `AsyncScanRequest`、`AsyncConnectRequest` 表达意图。
 - 通过 `AsyncStream/AsyncThrowingStream` 暴露扫描与连接事件。
+
+Async 独立文档请见：`FXBlueToothAsync/README.md`
 
 ## 使用示例
 

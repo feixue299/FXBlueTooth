@@ -69,10 +69,68 @@ public enum AsyncConnectionEvent {
 
 @available(iOS 13.0, macOS 10.15, *)
 public enum AsyncBleClientError: Error {
+    public enum Operation {
+        case connect
+        case disconnect
+        case discoverServices
+        case discoverCharacteristics
+        case readValue
+        case writeValue
+        case notifications
+    }
+
     case bluetoothUnavailable(CBManagerState)
     case busy
     case timeout
     case peripheralNotFound(UUID)
     case invalidState(String)
     case connectFailed(CBPeripheral, Error?)
+    case operationFailed(Operation, Error)
+}
+
+@available(iOS 13.0, macOS 10.15, *)
+extension AsyncBleClientError.Operation {
+    var label: String {
+        switch self {
+        case .connect:
+            return "connect"
+        case .disconnect:
+            return "disconnect"
+        case .discoverServices:
+            return "discoverServices"
+        case .discoverCharacteristics:
+            return "discoverCharacteristics"
+        case .readValue:
+            return "readValue"
+        case .writeValue:
+            return "writeValue"
+        case .notifications:
+            return "notifications"
+        }
+    }
+}
+
+@available(iOS 13.0, macOS 10.15, *)
+extension AsyncBleClientError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .bluetoothUnavailable(let state):
+            return "Bluetooth unavailable, current state: \(state.rawValue)"
+        case .busy:
+            return "Another BLE operation is already in progress"
+        case .timeout:
+            return "BLE operation timed out"
+        case .peripheralNotFound(let identifier):
+            return "Peripheral not found: \(identifier.uuidString)"
+        case .invalidState(let message):
+            return "Invalid BLE state: \(message)"
+        case .connectFailed(let peripheral, let error):
+            if let error = error {
+                return "Failed to connect peripheral \(peripheral.identifier.uuidString): \(error.localizedDescription)"
+            }
+            return "Failed to connect peripheral \(peripheral.identifier.uuidString)"
+        case .operationFailed(let operation, let error):
+            return "BLE operation \(operation.label) failed: \(error.localizedDescription)"
+        }
+    }
 }

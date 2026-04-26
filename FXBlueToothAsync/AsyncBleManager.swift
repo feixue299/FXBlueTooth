@@ -8,15 +8,13 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
     private var stateWaiters: [CheckedContinuation<Void, Error>] = []
 
     private var scanContinuation: AsyncThrowingStream<AsyncDiscoveredPeripheral, Error>.Continuation?
-    private var scanMatcher: ((AsyncDiscoveredPeripheral) -> Bool)?
 
-    private var pendingConnectContinuation: CheckedContinuation<CBPeripheral, Error>?
-    private var pendingConnectRequest: AsyncConnectRequest?
+    private var pendingConnectContinuation: CheckedContinuation<AsyncConnectedPeripheral, Error>?
+    private var pendingConnectPeripheral: CBPeripheral?
+    private var pendingConnectTimeout: Task<Void, Never>?
 
     private var waitingDisconnectIdentifier: UUID?
     private var pendingDisconnectContinuation: CheckedContinuation<Void, Error>?
-
-    private var connectTimeoutTask: Task<Void, Never>?
 
     private var eventContinuation: AsyncStream<AsyncConnectionEvent>.Continuation?
 
@@ -30,6 +28,118 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         central = CBCentralManager(delegate: self, queue: nil, options: options)
     }
 
+    // MARK: - State
+
+    /// 获取蓝牙状态
+    public func getState() async throws -> CBManagerState {
+        try await ensurePoweredOn()
+        return central.state
+    }
+
+    // MARK: - Scan
+
+    /// 扫描设备
+    /// 
+    /// 使用示例:
+    /// ```
+    /// let stream = manager.scan(AsyncScanRequest())
+    /// for try await discovered in stream {
+    ///     print("Found: \(discovered.peripheral.name ?? "Unknown")")
+    /// }
+    /// ```
+    public func scan(
+        _ request: AsyncScanRequest = AsyncScanRequest()
+    ) -> AsyncThrowingStream<AsyncDiscoveredPeripheral, Error> {
+        AsyncThrowingStream { continuation in
+            self.scanContinuation = continuation
+
+            Task {
+                do {
+                    try await self.ensurePoweredOn()
+                    self.central.scanForPeripherals(
+                        withServices: request.serviceUUIDs,
+                        options: request.options
+                    )
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { [weak self] _ in
+                Task {
+                    self?.central.stopScan()
+                    self?.scanContinuation = nil
+                }
+            }
+        }
+    }
+
+    // MARK: - Connect
+
+    /// 连接到发现的设备
+    /// - Parameters:
+    ///   - discovered: 扫描时发现的设备
+    ///   - timeout: 连接超时时间，默认15秒
+    /// - Returns: 已连接的设备对象
+    public func connect(
+        _ discovered: AsyncDiscoveredPeripheral,
+        timeout: TimeInterval = 15
+    ) async throws -> AsyncConnectedPeripheral {
+        return try await connect(discovered.peripheral, timeout: timeout)
+    }
+
+    /// 连接到指定的peripheral
+    public func connect(
+        _ peripheral: CBPeripheral,
+        timeout: TimeInterval = 15
+    ) async throws -> AsyncConnectedPeripheral {
+        guard pendingConnectContinuation == nil else {
+            throw AsyncBleClientError.busy
+        }
+
+        return try await withTaskCancellationHandler(operation: {
+            try await ensurePoweredOn()
+
+            return try await withCheckedThrowingContinuation { continuation in
+                self.pendingConnectContinuation = continuation
+                self.pendingConnectPeripheral = peripheral
+
+                self.central.stopScan()
+                self.central.connect(peripheral, options: nil)
+                self.scheduleConnectTimeout(timeout)
+            }
+        }, onCancel: {
+            Task {
+                self.pauseConnectForTaskCancellation()
+            }
+        })
+    }
+
+    // MARK: - Disconnect
+
+    /// 断开设备连接
+    public func disconnect(_ peripheral: CBPeripheral) async throws {
+        try await ensurePoweredOn()
+        guard pendingDisconnectContinuation == nil else {
+            throw AsyncBleClientError.busy
+        }
+
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                self.waitingDisconnectIdentifier = peripheral.identifier
+                self.pendingDisconnectContinuation = continuation
+                self.central.cancelPeripheralConnection(peripheral)
+            }
+        }, onCancel: {
+            Task {
+                self.pauseDisconnectForTaskCancellation()
+            }
+        })
+    }
+
+    // MARK: - Events
+
+    /// 获取连接事件流 (已连接/已断开)
     public func connectionEvents() -> AsyncStream<AsyncConnectionEvent> {
         AsyncStream { continuation in
             self.eventContinuation = continuation
@@ -41,74 +151,12 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         }
     }
 
-    public func scan(_ request: AsyncScanRequest = AsyncScanRequest()) -> AsyncThrowingStream<AsyncDiscoveredPeripheral, Error> {
-        AsyncThrowingStream { continuation in
-            self.scanContinuation = continuation
-            self.scanMatcher = request.matcher
-
-            Task {
-                do {
-                    try await self.ensurePoweredOn()
-                    self.central.scanForPeripherals(withServices: request.serviceUUIDs, options: request.options)
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { [weak self] _ in
-                Task {
-                    self?.stopScan()
-                }
-            }
-        }
-    }
-
-    public func connect(_ request: AsyncConnectRequest) async throws -> CBPeripheral {
-        guard pendingConnectContinuation == nil else {
-            throw AsyncBleClientError.busy
-        }
-
-        try await ensurePoweredOn()
-
-        return try await withCheckedThrowingContinuation { continuation in
-            self.pendingConnectContinuation = continuation
-            self.pendingConnectRequest = request
-
-            switch request.target {
-            case .peripheral(let peripheral):
-                self.startConnect(peripheral, options: request.connectOptions, timeout: request.timeout)
-            case .identifier(let identifier):
-                if let peripheral = self.central.retrievePeripherals(withIdentifiers: [identifier]).first {
-                    self.startConnect(peripheral, options: request.connectOptions, timeout: request.timeout)
-                } else {
-                    self.central.scanForPeripherals(withServices: request.scanServiceUUIDs, options: request.scanOptions)
-                    self.scheduleConnectTimeout(request.timeout)
-                }
-            case .matcher:
-                self.central.scanForPeripherals(withServices: request.scanServiceUUIDs, options: request.scanOptions)
-                self.scheduleConnectTimeout(request.timeout)
-            }
-        }
-    }
-
-    public func disconnect(_ peripheral: CBPeripheral) async throws {
-        try await ensurePoweredOn()
-        guard pendingDisconnectContinuation == nil else {
-            throw AsyncBleClientError.busy
-        }
-
-        try await withCheckedThrowingContinuation { continuation in
-            self.waitingDisconnectIdentifier = peripheral.identifier
-            self.pendingDisconnectContinuation = continuation
-            self.central.cancelPeripheralConnection(peripheral)
-        }
-    }
-
+    /// 停止扫描
     public func stopScan() {
         central.stopScan()
-        scanContinuation = nil
-        scanMatcher = nil
     }
+
+    // MARK: - CBCentralManagerDelegate
 
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
@@ -122,70 +170,61 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         }
     }
 
-    public func centralManager(_ central: CBCentralManager,
-                               didDiscover peripheral: CBPeripheral,
-                               advertisementData: [String: Any],
-                               rssi RSSI: NSNumber) {
+    public func centralManager(
+        _ central: CBCentralManager,
+        didDiscover peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
         let discovered = AsyncDiscoveredPeripheral(peripheral: peripheral, advertisementData: advertisementData, rssi: RSSI)
-
-        if let scanContinuation = scanContinuation {
-            if let matcher = scanMatcher {
-                if matcher(discovered) {
-                    scanContinuation.yield(discovered)
-                }
-            } else {
-                scanContinuation.yield(discovered)
-            }
-        }
-
-        guard let request = pendingConnectRequest else { return }
-        switch request.target {
-        case .identifier(let identifier):
-            if peripheral.identifier == identifier {
-                startConnect(peripheral, options: request.connectOptions, timeout: request.timeout)
-            }
-        case .matcher(let matcher):
-            if matcher(discovered) {
-                startConnect(peripheral, options: request.connectOptions, timeout: request.timeout)
-            }
-        case .peripheral:
-            break
-        }
+        scanContinuation?.yield(discovered)
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         clearConnectTimeout()
         central.stopScan()
-        pendingConnectRequest = nil
+        pendingConnectPeripheral = nil
 
-        pendingConnectContinuation?.resume(returning: peripheral)
+        let connectedPeripheral = AsyncConnectedPeripheral(peripheral: peripheral)
+        pendingConnectContinuation?.resume(returning: connectedPeripheral)
         pendingConnectContinuation = nil
 
         eventContinuation?.yield(.connected(peripheral))
     }
 
-    public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    public func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: Error?
+    ) {
         clearConnectTimeout()
         central.stopScan()
-        pendingConnectRequest = nil
+        pendingConnectPeripheral = nil
 
+        let error = error ?? NSError(domain: "BLE", code: -1, userInfo: [NSLocalizedDescriptionKey: "Connect failed"])
         pendingConnectContinuation?.resume(throwing: AsyncBleClientError.connectFailed(peripheral, error))
         pendingConnectContinuation = nil
     }
 
-    public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    public func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
         eventContinuation?.yield(.disconnected(peripheral, error))
 
         guard waitingDisconnectIdentifier == peripheral.identifier else { return }
 
         waitingDisconnectIdentifier = nil
         if let error = error {
-            pendingDisconnectContinuation?.resume(throwing: error)
+            pendingDisconnectContinuation?.resume(throwing: AsyncBleClientError.operationFailed(.disconnect, error))
         } else {
             pendingDisconnectContinuation?.resume(returning: ())
         }
         pendingDisconnectContinuation = nil
     }
+
+    // MARK: - Private Helpers
 
     private func ensurePoweredOn() async throws {
         if central.state == .poweredOn { return }
@@ -199,32 +238,40 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         }
     }
 
-    private func startConnect(_ peripheral: CBPeripheral, options: [String: Any]?, timeout: TimeInterval) {
-        clearConnectTimeout()
-        central.stopScan()
-        central.connect(peripheral, options: options)
-        scheduleConnectTimeout(timeout)
-    }
-
     private func scheduleConnectTimeout(_ timeout: TimeInterval) {
         clearConnectTimeout()
-        connectTimeoutTask = Task {
+        pendingConnectTimeout = Task {
             if timeout > 0 {
                 let nano = UInt64(timeout * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: nano)
             }
 
-            guard let continuation = pendingConnectContinuation else { return }
+            guard self.pendingConnectContinuation != nil else { return }
 
-            central.stopScan()
-            pendingConnectRequest = nil
-            pendingConnectContinuation = nil
-            continuation.resume(throwing: AsyncBleClientError.timeout)
+            self.central.stopScan()
+            self.pendingConnectPeripheral = nil
+            self.pendingConnectContinuation?.resume(throwing: AsyncBleClientError.timeout)
+            self.pendingConnectContinuation = nil
         }
     }
 
     private func clearConnectTimeout() {
-        connectTimeoutTask?.cancel()
-        connectTimeoutTask = nil
+        pendingConnectTimeout?.cancel()
+        pendingConnectTimeout = nil
+    }
+
+    private func pauseConnectForTaskCancellation() {
+        clearConnectTimeout()
+        central.stopScan()
+        if let peripheral = pendingConnectPeripheral {
+            central.cancelPeripheralConnection(peripheral)
+        }
+        pendingConnectPeripheral = nil
+        pendingConnectContinuation = nil
+    }
+
+    private func pauseDisconnectForTaskCancellation() {
+        waitingDisconnectIdentifier = nil
+        pendingDisconnectContinuation = nil
     }
 }
