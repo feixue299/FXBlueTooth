@@ -115,18 +115,30 @@ struct AsyncBleManagerScanTests {
 @Suite("AsyncBleManager 断开连接")
 struct AsyncBleManagerDisconnectTests {
 
+    /// 仅用于触发参数类型检查。
+    /// 在本测试中会先因蓝牙状态异常抛错，不会真正访问 peripheral。
+    private func peripheralStub() -> CBPeripheral {
+        unsafeBitCast(NSObject(), to: CBPeripheral.self)
+    }
+
     @Test("disconnect 调用 cancelPeripheralConnection")
     func disconnect_callsCancel() async throws {
-        // 由于 disconnect 需要 CBPeripheral 实例（由 CoreBluetooth 管理，无法直接创建），
-        // 此测试验证在状态异常时的错误分支
+        // CBPeripheral 无法直接构造，先验证状态异常分支：应抛出 bluetoothUnavailable。
         let mock = MockCentralManager()
         mock.state = .poweredOff
         let manager = AsyncBleManager(central: mock)
 
         let task = Task {
-            // 尝试断开时应先等待 poweredOn，后等待断开
-            // 因为 poweredOff，会抛出 bluetoothUnavailable
+            try await manager.disconnect(peripheralStub())
         }
-        task.cancel()
+
+        // 让出执行权，等待 disconnect 进入 ensurePoweredOn 等待。
+        try await Task.sleep(nanoseconds: 10_000_000)
+        manager.handleStateUpdate()
+
+        await #expect(throws: AsyncBleClientError.self) {
+            try await task.value
+        }
+        #expect(mock.cancelConnectionCalledWith == nil)
     }
 }
