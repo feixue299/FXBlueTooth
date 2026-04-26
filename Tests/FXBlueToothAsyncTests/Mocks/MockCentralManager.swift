@@ -14,7 +14,7 @@ final class MockCentralManager: CentralManagerProtocol {
     var scanWasCalled = false
     var stopScanCalled = false
     var connectCalledWith: CBPeripheral? = nil
-    var cancelConnectionCalledWith: CBPeripheral? = nil
+    var cancelConnectionCalledWithIdentifier: UUID? = nil
 
     func scanForPeripherals(withServices serviceUUIDs: [CBUUID]?, options: [String: Any]?) {
         scanWasCalled = true
@@ -29,7 +29,7 @@ final class MockCentralManager: CentralManagerProtocol {
         connectCalledWith = peripheral
     }
 
-    func cancelPeripheralConnection(_ peripheral: CBPeripheral) {
-        cancelConnectionCalledWith = peripheral
+    func cancelPeripheralConnection(_ peripheral: any PeripheralProtocol) {
+        cancelConnectionCalledWithIdentifier = peripheral.identifier
     }
 }

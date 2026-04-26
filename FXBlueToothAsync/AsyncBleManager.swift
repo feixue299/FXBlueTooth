@@ -108,7 +108,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
     // MARK: - Disconnect
 
     /// 断开连接
-    public func disconnect(_ peripheral: CBPeripheral) async throws {
+    public func disconnect(_ peripheral: any PeripheralProtocol) async throws {
         try await ensurePoweredOn()
         guard pendingDisconnectContinuation == nil else {
             throw AsyncBleClientError.busy
@@ -239,8 +239,16 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
     func handleDidDisconnect(peripheral: CBPeripheral, error: Error?) {
         eventContinuation?.yield(.disconnected(peripheral, error))
+        resolveDisconnect(identifier: peripheral.identifier, error: error)
+    }
 
-        guard waitingDisconnectIdentifier == peripheral.identifier else { return }
+    /// 测试专用：从 MockPeripheral 触发断开回调
+    func handleDidDisconnect(peripheral: any PeripheralProtocol, error: Error?) {
+        resolveDisconnect(identifier: peripheral.identifier, error: error)
+    }
+
+    private func resolveDisconnect(identifier: UUID, error: Error?) {
+        guard waitingDisconnectIdentifier == identifier else { return }
 
         waitingDisconnectIdentifier = nil
         if let error = error {

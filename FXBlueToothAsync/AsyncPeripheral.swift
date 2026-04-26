@@ -41,9 +41,14 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
         }
 
         return try await runWithTimeout(timeout) {
-            try await withCheckedThrowingContinuation { continuation in
-                self.discoverServicesContinuation = continuation
-                self._peripheral.discoverServices(serviceUUIDs)
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.discoverServicesContinuation = continuation
+                    self._peripheral.discoverServices(serviceUUIDs)
+                }
+            } onCancel: {
+                self.discoverServicesContinuation?.resume(throwing: CancellationError())
+                self.discoverServicesContinuation = nil
             }
         }
     }
@@ -58,10 +63,15 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
             throw AsyncBleClientError.busy
         }
 
+        let serviceUUID = service.uuid
         return try await runWithTimeout(timeout) {
-            try await withCheckedThrowingContinuation { continuation in
-                self.discoverCharacteristicsContinuations[service.uuid] = continuation
-                self._peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.discoverCharacteristicsContinuations[serviceUUID] = continuation
+                    self._peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
+                }
+            } onCancel: {
+                self.discoverCharacteristicsContinuations.removeValue(forKey: serviceUUID)?.resume(throwing: CancellationError())
             }
         }
     }
@@ -77,10 +87,15 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
             throw AsyncBleClientError.busy
         }
 
+        let uuid = characteristic.uuid
         return try await runWithTimeout(timeout) {
-            try await withCheckedThrowingContinuation { continuation in
-                self.readContinuations[characteristic.uuid] = continuation
-                self._peripheral.readValue(for: characteristic)
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.readContinuations[uuid] = continuation
+                    self._peripheral.readValue(for: characteristic)
+                }
+            } onCancel: {
+                self.readContinuations.removeValue(forKey: uuid)?.resume(throwing: CancellationError())
             }
         }
     }
@@ -101,10 +116,15 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
             throw AsyncBleClientError.busy
         }
 
+        let uuid = characteristic.uuid
         try await runWithTimeout(timeout) {
-            try await withCheckedThrowingContinuation { continuation in
-                self.writeContinuations[characteristic.uuid] = continuation
-                self._peripheral.writeValue(data, for: characteristic, type: .withResponse)
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    self.writeContinuations[uuid] = continuation
+                    self._peripheral.writeValue(data, for: characteristic, type: .withResponse)
+                }
+            } onCancel: {
+                self.writeContinuations.removeValue(forKey: uuid)?.resume(throwing: CancellationError())
             }
         }
     }
@@ -230,9 +250,14 @@ public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
                     try await Task.sleep(nanoseconds: nano)
                     throw AsyncBleClientError.timeout
                 }
-                let result = try await group.next()!
-                group.cancelAll()
-                return result
+                do {
+                    let result = try await group.next()!
+                    group.cancelAll()
+                    return result
+                } catch is CancellationError {
+                    // operation task 因超时被 cancel 后抛出 CancellationError，映射为 .timeout
+                    throw AsyncBleClientError.timeout
+                }
             }
         } else {
             return try await operation()

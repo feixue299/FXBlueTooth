@@ -115,30 +115,45 @@ struct AsyncBleManagerScanTests {
 @Suite("AsyncBleManager 断开连接")
 struct AsyncBleManagerDisconnectTests {
 
-    /// 仅用于触发参数类型检查。
-    /// 在本测试中会先因蓝牙状态异常抛错，不会真正访问 peripheral。
-    private func peripheralStub() -> CBPeripheral {
-        unsafeBitCast(NSObject(), to: CBPeripheral.self)
-    }
-
-    @Test("disconnect 调用 cancelPeripheralConnection")
-    func disconnect_callsCancel() async throws {
-        // CBPeripheral 无法直接构造，先验证状态异常分支：应抛出 bluetoothUnavailable。
+    @Test("disconnect - 蓝牙关闭时抛出 bluetoothUnavailable")
+    func disconnect_throwsWhenPoweredOff() async throws {
         let mock = MockCentralManager()
         mock.state = .poweredOff
         let manager = AsyncBleManager(central: mock)
+        let peripheral = MockPeripheral()
 
         let task = Task {
-            try await manager.disconnect(peripheralStub())
+            try await manager.disconnect(peripheral)
         }
 
-        // 让出执行权，等待 disconnect 进入 ensurePoweredOn 等待。
         try await Task.sleep(nanoseconds: 10_000_000)
         manager.handleStateUpdate()
 
         await #expect(throws: AsyncBleClientError.self) {
             try await task.value
         }
-        #expect(mock.cancelConnectionCalledWith == nil)
+        // 蓝牙不可用，不应调用 cancelPeripheralConnection
+        #expect(mock.cancelConnectionCalledWithIdentifier == nil)
+    }
+
+    @Test("disconnect - 调用 cancelPeripheralConnection")
+    func disconnect_callsCancelPeripheralConnection() async throws {
+        let mock = MockCentralManager()
+        mock.state = .poweredOn
+        let manager = AsyncBleManager(central: mock)
+        manager.handleStateUpdate()
+        let peripheral = MockPeripheral()
+
+        let task = Task {
+            try await manager.disconnect(peripheral)
+        }
+
+        try await Task.sleep(nanoseconds: 10_000_000)
+        // 验证 cancelPeripheralConnection 已被调用
+        #expect(mock.cancelConnectionCalledWithIdentifier == peripheral.identifier)
+
+        // 模拟断开事件，让 disconnect 正常返回
+        manager.handleDidDisconnect(peripheral: peripheral, error: nil)
+        try await task.value
     }
 }

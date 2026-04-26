@@ -9,8 +9,14 @@ public protocol CentralManagerProtocol: AnyObject {
     func scanForPeripherals(withServices serviceUUIDs: [CBUUID]?, options: [String: Any]?)
     func stopScan()
     func connect(_ peripheral: CBPeripheral, options: [String: Any]?)
-    func cancelPeripheralConnection(_ peripheral: CBPeripheral)
+    func cancelPeripheralConnection(_ peripheral: any PeripheralProtocol)
 }
 
 @available(iOS 13.0, macOS 10.15, *)
-extension CBCentralManager: CentralManagerProtocol {}
+extension CBCentralManager: CentralManagerProtocol {
+    public func cancelPeripheralConnection(_ peripheral: any PeripheralProtocol) {
+        if let cbPeripheral = peripheral as? CBPeripheral {
+            cancelPeripheralConnection(cbPeripheral)
+        }
+    }
+}
