@@ -8,7 +8,6 @@ let package = Package(
         .macOS(.v10_15)
     ],
     products: [
-        .library(name: "FXBlueTooth", targets: ["FXBlueTooth"]),
         .library(name: "FXBlueToothDSL", targets: ["FXBlueTooth"]),
         .library(name: "FXBlueToothAsync", targets: ["FXBlueToothAsync"]),
     ],

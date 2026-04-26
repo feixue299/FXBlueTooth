@@ -11,8 +11,10 @@ let manager = AsyncBleManager()
 let state = try await manager.getState()
 
 // 扫描并连接 (闭包返回 ScanAction)
+var connectedPeripheral: CBPeripheral?
 let device = try await manager.scan() { discovered in
     if discovered.peripheral.name == "MyDevice" {
+        connectedPeripheral = discovered.peripheral
         return .connect  // 连接这个设备，停止扫描
     }
     return .skip  // 跳过，继续扫描
@@ -30,7 +32,9 @@ for try await data in notifications {
 }
 
 // 断开连接
-try await manager.disconnect(device.peripheral)
+if let peripheral = connectedPeripheral {
+    try await manager.disconnect(peripheral)
+}
 ```
 
 ## 完整流程示例
@@ -39,8 +43,10 @@ try await manager.disconnect(device.peripheral)
 let manager = AsyncBleManager()
 
 // 1. 扫描并连接到目标设备
+var connectedPeripheral: CBPeripheral?
 let device = try await manager.scan() { discovered in
     if discovered.peripheral.name == "MyBleDevice" {
+        connectedPeripheral = discovered.peripheral
         return .connect  // 连接这个设备，停止扫描
     }
     return .skip  // 不是目标，继续扫描
@@ -77,7 +83,9 @@ if let notifyChar = characteristics.first(where: { $0.properties.contains(.notif
 }
 
 // 7. 断开连接
-try await manager.disconnect(device.peripheral)
+if let peripheral = connectedPeripheral {
+    try await manager.disconnect(peripheral)
+}
 ```
 
 ## API 说明
@@ -88,9 +96,8 @@ try await manager.disconnect(device.peripheral)
 |------|------|
 | `getState()` | 获取蓝牙状态 |
 | `scan(onDiscovered:)` | 扫描设备，闭包返回 ScanAction (.skip 继续扫描，.connect 连接并停止) |
-| `connect(_ discovered)` | 连接发现的设备 |
 | `connect(_ peripheral)` | 连接指定 peripheral |
-| `disconnect(_ peripheral)` | 断开连接 |
+| `disconnect(_ peripheral)` | 断开连接（参数类型为 `any PeripheralProtocol`） |
 | `connectionEvents()` | 监听连接/断开事件流 |
 | `stopScan()` | 停止扫描 |
 
@@ -114,15 +121,24 @@ let services = try await device.discover(timeout: 10)
 
 // Task 取消支持
 let task = Task {
-    let device = try await manager.scan() { discovered in
+    _ = try await manager.scan() { discovered in
         if discovered.peripheral.name == "MyDevice" {
-            try await manager.connect(discovered)
+            return .connect
         }
+        return .skip
     }
 }
 
 task.cancel()  // 取消扫描
 ```
+
+## 测试建议
+
+单元测试里建议通过 Mock 对象持有的 `peripheralDelegate` 模拟真实回调链路：
+
+- 在 mock 的 `discover/read/write` 调用后，通过 delegate 异步回调结果
+- 通过开关控制是否自动回调，用于构造 `busy` 和 `timeout` 场景
+- 避免在测试中直接调用 `AsyncPeripheral` 的内部 `handleDid*` 方法
 
 ## 错误处理
 

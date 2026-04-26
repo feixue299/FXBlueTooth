@@ -15,18 +15,24 @@
 **结构化并发风格** - `async/await` 原生支持，代码更简洁、任务可取消
 
 ```swift
-// 扫描 → 连接 → 发现 → 读写，一行一行
+// 扫描 → 连接 → 发现 → 读写
 let manager = AsyncBleManager()
-let scanStream = manager.scan()
+var targetPeripheral: CBPeripheral?
 
-for try await discovered in scanStream {
+let connected = try await manager.scan { discovered in
     if discovered.peripheral.name == "MyDevice" {
-        let connected = try await manager.connect(discovered)
-        let services = try await connected.discoverServices()
-        let chars = try await connected.discoverCharacteristics(for: services[0])
-        let data = try await connected.readValue(for: chars[0])
-        break
+        targetPeripheral = discovered.peripheral
+        return .connect
     }
+    return .skip
+}
+
+let services = try await connected.discover(serviceUUIDs: nil)
+let chars = try await connected.discover(characteristicUUIDs: nil, for: services[0])
+let data = try await connected.read(for: chars[0])
+
+if let peripheral = targetPeripheral {
+    try await manager.disconnect(peripheral)
 }
 ```
 
@@ -172,14 +178,24 @@ import CoreBluetooth
 @available(iOS 13.0, *)
 func example(asyncManager: AsyncBleManager) async {
     do {
-        let request = AsyncConnectRequest(
-            target: .identifier(UUID(uuidString: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")!),
-            scanServiceUUIDs: [CBUUID(string: "FFE0")],
-            timeout: 10
-        )
+        var connectedPeripheral: CBPeripheral?
 
-        let peripheral = try await asyncManager.connect(request)
-        print("connected: \(peripheral.name ?? "")")
+        let device = try await asyncManager.scan(
+            AsyncScanRequest(serviceUUIDs: [CBUUID(string: "FFE0")])
+        ) { discovered in
+            if discovered.peripheral.identifier.uuidString == "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" {
+                connectedPeripheral = discovered.peripheral
+                return .connect
+            }
+            return .skip
+        }
+
+        let services = try await device.discover(serviceUUIDs: nil)
+        print("services count: \(services.count)")
+
+        if let peripheral = connectedPeripheral {
+            try await asyncManager.disconnect(peripheral)
+        }
     } catch {
         print("connect failed: \(error)")
     }
@@ -189,8 +205,8 @@ func example(asyncManager: AsyncBleManager) async {
 `FXBlueToothAsync` 的设计目标是独立 API：
 
 - 不依赖 `FXBlueTooth` 的 `BleManager` / `BleManagerCommandItem`。
-- 通过 `AsyncScanRequest`、`AsyncConnectRequest` 表达意图。
-- 通过 `AsyncStream/AsyncThrowingStream` 暴露扫描与连接事件。
+- 通过 `AsyncScanRequest` 和 `ScanAction` 表达扫描/连接意图。
+- 通过 async/await 暴露扫描、连接、发现、读写流程。
 
 Async 独立文档请见：`FXBlueToothAsync/README.md`
 

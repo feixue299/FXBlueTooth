@@ -16,31 +16,25 @@ struct AsyncPeripheralDiscoverServicesTests {
         let uuid = CBUUID(string: "180A")
         mock.services = [CBMutableService(type: uuid, primary: true)]
 
-        let task = Task { try await ap.discover(serviceUUIDs: nil) }
-        try await Task.sleep(nanoseconds: 10_000_000)
-        ap.handleDidDiscoverServices(error: nil)
-
-        let services = try await task.value
+        let services = try await ap.discover(serviceUUIDs: nil)
         #expect(services.count == 1)
         #expect(services.first?.uuid == uuid)
     }
 
     @Test("discoverServices - 错误时抛出异常")
     func discoverServices_throwsOnError() async throws {
-        let (ap, _) = makePeripheral()
-        let task = Task { try await ap.discover(serviceUUIDs: nil) }
-
-        try await Task.sleep(nanoseconds: 10_000_000)
-        ap.handleDidDiscoverServices(error: NSError(domain: "BLE", code: 1))
+        let (ap, mock) = makePeripheral()
+        mock.discoverServicesError = NSError(domain: "BLE", code: 1)
 
         await #expect {
-            try await task.value
+            try await ap.discover(serviceUUIDs: nil)
         } throws: { $0 is AsyncBleClientError }
     }
 
     @Test("discoverServices - 重复调用时抛出 busy")
     func discoverServices_throwsBusy() async throws {
-        let (ap, _) = makePeripheral()
+        let (ap, mock) = makePeripheral()
+        mock.autoCallbackDiscoverServices = false
         let task1 = Task { try await ap.discover(serviceUUIDs: nil) }
 
         try await Task.sleep(nanoseconds: 10_000_000)
@@ -52,11 +46,13 @@ struct AsyncPeripheralDiscoverServicesTests {
         }
 
         task1.cancel()
+        _ = try? await task1.value
     }
 
     @Test("discoverServices - 超时时抛出 timeout")
     func discoverServices_timeout() async throws {
-        let (ap, _) = makePeripheral()
+        let (ap, mock) = makePeripheral()
+        mock.autoCallbackDiscoverServices = false
         await #expect {
             try await ap.discover(serviceUUIDs: nil, timeout: 0.05)
         } throws: { error in
@@ -68,7 +64,7 @@ struct AsyncPeripheralDiscoverServicesTests {
 
 @Suite("AsyncPeripheral Characteristic 发现")
 struct AsyncPeripheralDiscoverCharacteristicsTests {
-    private func makeSetup() -> (AsyncPeripheral, CBMutableService) {
+    private func makeSetup() -> (AsyncPeripheral, MockPeripheral, CBMutableService) {
         let mock = MockPeripheral()
         let ap = AsyncPeripheral(peripheral: mock)
         let service = CBMutableService(type: CBUUID(string: "180A"), primary: true)
@@ -79,38 +75,31 @@ struct AsyncPeripheralDiscoverCharacteristicsTests {
             permissions: [.readable]
         )
         service.characteristics = [char]
-        return (ap, service)
+        return (ap, mock, service)
     }
 
     @Test("discoverCharacteristics - 成功返回")
     func returnsCharacteristics() async throws {
-        let (ap, service) = makeSetup()
-        let task = Task { try await ap.discover(characteristicUUIDs: nil, for: service) }
-
-        try await Task.sleep(nanoseconds: 10_000_000)
-        ap.handleDidDiscoverCharacteristics(for: service, error: nil)
-
-        let chars = try await task.value
+        let (ap, _, service) = makeSetup()
+        let chars = try await ap.discover(characteristicUUIDs: nil, for: service)
         #expect(chars.count == 1)
         #expect(chars.first?.uuid == CBUUID(string: "2A29"))
     }
 
     @Test("discoverCharacteristics - 错误时抛出异常")
     func throwsOnError() async throws {
-        let (ap, service) = makeSetup()
-        let task = Task { try await ap.discover(characteristicUUIDs: nil, for: service) }
-
-        try await Task.sleep(nanoseconds: 10_000_000)
-        ap.handleDidDiscoverCharacteristics(for: service, error: NSError(domain: "BLE", code: 2))
+        let (ap, mock, service) = makeSetup()
+        mock.discoverCharacteristicsError = NSError(domain: "BLE", code: 2)
 
         await #expect {
-            try await task.value
+            try await ap.discover(characteristicUUIDs: nil, for: service)
         } throws: { $0 is AsyncBleClientError }
     }
 
     @Test("discoverCharacteristics - 超时")
     func timeout() async throws {
-        let (ap, service) = makeSetup()
+        let (ap, mock, service) = makeSetup()
+        mock.autoCallbackDiscoverCharacteristics = false
         await #expect {
             try await ap.discover(characteristicUUIDs: nil, for: service, timeout: 0.05)
         } throws: { error in
@@ -136,20 +125,11 @@ struct AsyncPeripheralReadWriteTests {
 
     @Test("read - 成功返回数据")
     func read_returnsData() async throws {
-        let (ap, _, char) = makeSetup()
+        let (ap, mock, char) = makeSetup()
         let expected = Data([0x01, 0x02, 0x03])
-        let readChar = CBMutableCharacteristic(
-            type: char.uuid,
-            properties: char.properties,
-            value: expected,
-            permissions: char.permissions
-        )
+        mock.readValueResultByUUID[char.uuid] = .success(expected)
 
-        let task = Task { try await ap.read(for: char) }
-        try await Task.sleep(nanoseconds: 10_000_000)
-        ap.handleDidUpdateValue(for: readChar, error: nil)
-
-        let data = try await task.value
+        let data = try await ap.read(for: char)
         #expect(data == expected)
     }
 
@@ -163,11 +143,7 @@ struct AsyncPeripheralReadWriteTests {
     @Test("write withResponse - 成功时返回")
     func write_withResponse_success() async throws {
         let (ap, _, char) = makeSetup()
-        let task = Task { try await ap.write(Data([0xAB]), to: char, type: .withResponse) }
-
-        try await Task.sleep(nanoseconds: 10_000_000)
-        ap.handleDidWriteValue(for: char, error: nil)
-        try await task.value
+        try await ap.write(Data([0xAB]), to: char, type: .withResponse)
     }
 }
 
@@ -197,13 +173,7 @@ struct AsyncPeripheralNotificationTests {
         }
 
         for byte: UInt8 in [0x01, 0x02, 0x03] {
-            let notifyChar = CBMutableCharacteristic(
-                type: char.uuid,
-                properties: [.notify],
-                value: Data([byte]),
-                permissions: []
-            )
-            ap.handleDidUpdateValue(for: notifyChar, error: nil)
+            mock.emitNotificationValue(for: char.uuid, data: Data([byte]))
             try await Task.sleep(nanoseconds: 5_000_000)
         }
 
