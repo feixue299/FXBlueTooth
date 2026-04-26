@@ -7,6 +7,16 @@
 
 基于 CoreBluetooth 封装的 iOS 蓝牙管理库，提供扫描、连接、特征值读写等完整流程的链式调用接口。
 
+## 双库设计（进行中）
+
+- `FXBlueToothDSL`：现有 DSL 风格 API（回调模型，iOS 10+）。
+- `FXBlueToothAsync`：结构化并发风格 API（`async/await`，iOS 13+）。
+
+当前仓库已开始实现双库发布入口：
+
+- Swift Package 新增 product：`FXBlueToothDSL`、`FXBlueToothAsync`。
+- CocoaPods 新增 spec：`FXBlueToothAsync.podspec`。
+
 ## 架构设计
 
 ### 整体分层
@@ -102,6 +112,18 @@ dependencies: [
 ]
 ```
 
+DSL 风格（现有 API）可继续使用：
+
+```swift
+.product(name: "FXBlueToothDSL", package: "FXBlueTooth")
+```
+
+结构化并发风格（新 API）可使用：
+
+```swift
+.product(name: "FXBlueToothAsync", package: "FXBlueTooth")
+```
+
 或在 Xcode 中选择 **File → Add Packages**，输入仓库地址：
 
 ```
@@ -111,6 +133,35 @@ https://github.com/feixue299/FXBlueTooth.git
 ### 手动集成
 
 克隆仓库后，将 `FXBlueTooth/Classes` 目录下的所有文件拖入项目即可。
+
+## Async 快速示例（独立设计）
+
+```swift
+import FXBlueToothAsync
+import CoreBluetooth
+
+@available(iOS 13.0, *)
+func example(asyncManager: AsyncBleManager) async {
+    do {
+        let request = AsyncConnectRequest(
+            target: .identifier(UUID(uuidString: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX")!),
+            scanServiceUUIDs: [CBUUID(string: "FFE0")],
+            timeout: 10
+        )
+
+        let peripheral = try await asyncManager.connect(request)
+        print("connected: \(peripheral.name ?? "")")
+    } catch {
+        print("connect failed: \(error)")
+    }
+}
+```
+
+`FXBlueToothAsync` 的设计目标是独立 API：
+
+- 不依赖 `FXBlueTooth` 的 `BleManager` / `BleManagerCommandItem`。
+- 通过 `AsyncScanRequest`、`AsyncConnectRequest` 表达意图。
+- 通过 `AsyncStream/AsyncThrowingStream` 暴露扫描与连接事件。
 
 ## 使用示例
 
