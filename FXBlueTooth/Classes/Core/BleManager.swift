@@ -72,8 +72,16 @@ public class PeripheralInfo: Equatable {
 /// 内部通过 `CentralManager` 管理 `CBCentralManager` 的生命周期和事件处理。
 public class BleManager {
 
-    /// 操作完成回调类型，成功时携带已连接的 `CBPeripheral`，失败时携带 `BleManagerError`
-    public typealias Handler = (Result<CBPeripheral, BleManagerError>) -> Void
+    /// 蓝牙操作成功事件，区分连接成功与断开完成两类语义。
+    public enum Event {
+        /// 外设连接成功
+        case connected(CBPeripheral)
+        /// 外设断开完成（主动断开时 error 为 nil，异常断开时携带错误）
+        case disconnected(CBPeripheral, error: Error?)
+    }
+
+    /// 操作完成回调类型，成功时返回 `Event`，失败时返回 `BleManagerError`
+    public typealias Handler = (Result<Event, BleManagerError>) -> Void
 
     /// 内部中心管理器，负责实际的蓝牙操作
     public let centralManager: CentralManager
@@ -119,6 +127,8 @@ public extension BleManager {
         private var command: BleManagerCommand?
         /// 当前操作的完成回调
         private var handler: Handler?
+        /// 当前是否已发起连接（同一轮 execute 内用于防止重复 connect）
+        private var connectingPeripheralIdentifier: UUID?
         /// 本次扫描已发现的外设信息列表
         private var discoverPeripheral: [PeripheralInfo] = []
         /// 状态恢复时系统返回的外设列表（用于后台重连场景）
@@ -135,10 +145,18 @@ public extension BleManager {
         }
 
         /// 内部方法：停止扫描并触发完成回调，回调后清空 handler 防止重复触发
-        private func handlerComplete(_ completion: Result<CBPeripheral, BleManagerError>) {
+        private func handlerComplete(_ completion: Result<Event, BleManagerError>) {
             centralManager.stopScan()
             handler?(completion)
             handler = nil
+        }
+
+        /// 统一连接入口：同一轮 execute 中仅允许发起一次连接，避免扫描回调触发重复 connect。
+        private func connectIfNeeded(_ peripheral: CBPeripheral, by central: CBCentralManager) {
+            guard connectingPeripheralIdentifier == nil else { return }
+            connectingPeripheralIdentifier = peripheral.identifier
+            central.stopScan()
+            central.connect(peripheral, options: command?.connectInfo)
         }
 
         /// 执行蓝牙操作：停止当前扫描，根据命令配置决定直接连接或重新扫描
@@ -148,6 +166,7 @@ public extension BleManager {
 
             centralManager.stopScan()
             discoverPeripheral.removeAll()  // 清空上次扫描结果
+            connectingPeripheralIdentifier = nil
 
             self.command = command
             self.handler = handler
@@ -167,7 +186,7 @@ public extension BleManager {
             switch target {
             case .peripheral(let peripheral):
                 // 直接持有外设对象，无需扫描，立即发起连接
-                centralManager.connect(peripheral, options: command?.connectInfo)
+                connectIfNeeded(peripheral, by: centralManager)
 
             case .uuid(let uuid, let retrieveServices):
                 // 先尝试从系统已连接列表 / 状态恢复列表中找到外设，避免重复扫描
@@ -175,10 +194,10 @@ public extension BleManager {
                    let peripheral = centralManager
                        .retrieveConnectedPeripherals(withServices: services)
                        .first(where: { $0.identifier.uuidString == uuid }) {
-                    centralManager.connect(peripheral, options: command?.connectInfo)
+                    connectIfNeeded(peripheral, by: centralManager)
                 } else if let peripheral = restorePeripheral
                        .first(where: { $0.identifier.uuidString == uuid }) {
-                    centralManager.connect(peripheral, options: command?.connectInfo)
+                    connectIfNeeded(peripheral, by: centralManager)
                 } else {
                     // 缓存中没有，启动扫描
                     centralManagerDidUpdateState(centralManager)
@@ -250,12 +269,12 @@ public extension BleManager {
             case .uuid(let uuid, _):
                 // 按 UUID 匹配：在已发现列表中找到目标外设后立即连接
                 if let info = discoverPeripheral.first(where: { $0.peripheral.identifier.uuidString == uuid }) {
-                    central.connect(info.peripheral, options: command?.connectInfo)
+                    connectIfNeeded(info.peripheral, by: central)
                 }
             case .predicate(let match):
                 // 按条件匹配：找到第一个满足条件的外设后立即连接
                 if let info = discoverPeripheral.first(where: { match($0) }) {
-                    central.connect(info.peripheral, options: command?.connectInfo)
+                    connectIfNeeded(info.peripheral, by: central)
                 }
             case .peripheral:
                 // 直接传入外设对象的场景不走扫描流程，此处无需处理
@@ -265,18 +284,21 @@ public extension BleManager {
 
         /// 连接外设成功回调：回调成功结果，并将外设传递给命令中配置的处理器
         public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-            handlerComplete(.success(peripheral))
+            connectingPeripheralIdentifier = nil
+            handlerComplete(.success(.connected(peripheral)))
             // 将已连接外设传递给业务层的 PeripheralHandler（如 PeripheralDevice）
             command?.handle?.peripheral = peripheral
         }
 
         /// 连接外设失败回调：回调连接失败错误
         public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+            connectingPeripheralIdentifier = nil
             handlerComplete(.failure(.centralConnectError(reason: .failToConnect(error))))
         }
 
         /// 外设断开连接回调：记录日志，通知断开监听器，并回调成功结果
         public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+            connectingPeripheralIdentifier = nil
             bleLogger.debug("断开连接成功:\(peripheral.name ?? "")")
             if let error = error {
                 // 异常断开时记录错误日志
@@ -284,7 +306,7 @@ public extension BleManager {
             }
             // 通知命令中配置的断开连接监听器
             command?.didDisConnect?.centralManager(central, didDisconnectPeripheral: peripheral, error: error)
-            handlerComplete(.success(peripheral))
+            handlerComplete(.success(.disconnected(peripheral, error: error)))
         }
 
     }

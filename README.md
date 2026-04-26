@@ -143,8 +143,13 @@ bleManager.execute(
     ]
 ) { result in
     switch result {
-    case .success(let peripheral):
-        print("已连接：\(peripheral.name ?? "未知设备")")
+    case .success(let event):
+        switch event {
+        case .connected(let peripheral):
+            print("已连接：\(peripheral.name ?? "未知设备")")
+        case .disconnected(let peripheral, let error):
+            print("已断开：\(peripheral.name ?? "未知设备"), error: \(String(describing: error))")
+        }
     case .failure(let error):
         print("错误：\(error)")
     }
@@ -182,8 +187,13 @@ bleManager.execute(
     ]
 ) { result in
     switch result {
-    case .success(let peripheral):
-        print("连接成功：\(peripheral.name ?? "")")
+    case .success(let event):
+        switch event {
+        case .connected(let peripheral):
+            print("连接成功：\(peripheral.name ?? "")")
+        case .disconnected(let peripheral, let error):
+            print("连接已断开：\(peripheral.name ?? ""), error: \(String(describing: error))")
+        }
     case .failure(let error):
         print("连接失败：\(error)")
     }
@@ -504,13 +514,18 @@ class BlueToothManager {
             ]
         ) { [weak self] result in
             switch result {
-            case .success(let peripheral):
-                print("连接成功：\(peripheral.name ?? "")")
-                // 等待特征值就绪后再发送指令
-                self?.characteristicValue.peripheral = peripheral
-                self?.adapter.readyForCommand { cv in
-                    print("特征值就绪，可以发送指令")
-                    self?.sendQueryStatus()
+            case .success(let event):
+                switch event {
+                case .connected(let peripheral):
+                    print("连接成功：\(peripheral.name ?? "")")
+                    // 等待特征值就绪后再发送指令
+                    self?.characteristicValue.peripheral = peripheral
+                    self?.adapter.readyForCommand { cv in
+                        print("特征值就绪，可以发送指令")
+                        self?.sendQueryStatus()
+                    }
+                case .disconnected(let peripheral, let error):
+                    print("连接已断开：\(peripheral.name ?? ""), error: \(String(describing: error))")
                 }
             case .failure(let error):
                 print("连接失败：\(error)")
