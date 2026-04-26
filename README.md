@@ -156,12 +156,29 @@ bleManager.execute(
 ```swift
 let targetUUID = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
 
+// 方式一：按 UUID 重连（先从系统已连接列表检索，找不到再扫描）
 bleManager.execute(
     commandItems: [
         .scanServices([CBUUID(string: "FFE0")]),
-        .filter(myFilter),                        // 实现 PeripheralFilter 协议
-        .connect(uuid: targetUUID),
-        .handle(peripheralDevice)                 // 连接成功后绑定 PeripheralDevice
+        .connect(.uuid(targetUUID, retrieveServices: [CBUUID(string: "FFE0")])),
+        .handle(peripheralDevice)
+    ]
+) { result in ... }
+
+// 方式二：扫描到外设对象后直接连接
+bleManager.execute(
+    commandItems: [
+        .connect(.peripheral(somePeripheral)),
+        .handle(peripheralDevice)
+    ]
+) { result in ... }
+
+// 方式三：按条件自动匹配，连接第一个名称包含 "MyDevice" 的外设
+bleManager.execute(
+    commandItems: [
+        .scanServices([CBUUID(string: "FFE0")]),
+        .connect(.predicate { $0.peripheral.name?.contains("MyDevice") == true }),
+        .handle(peripheralDevice)
     ]
 ) { result in
     switch result {
@@ -301,7 +318,7 @@ class MyDisconnectHandler: PeripheralDidDisConnect {
 
 bleManager.execute(
     commandItems: [
-        .connect(uuid: targetUUID),
+        .connect(.uuid(targetUUID)),
         .didDisConnect(MyDisconnectHandler())
     ]
 ) { _ in }
@@ -481,9 +498,7 @@ class BlueToothManager {
             commandItems: [
                 .scanServices([CBUUID(string: "FFE0")]),
                 .filter(filter),
-                .connect(uuid: uuid),
-                // 先尝试从已连接列表中恢复，避免重复扫描
-                .retrieveConnected(services: [CBUUID(string: "FFE0")]),
+                .connect(.uuid(uuid, retrieveServices: [CBUUID(string: "FFE0")])),
                 .handle(peripheralDevice),
                 .didDisConnect(disconnectHandler)
             ]

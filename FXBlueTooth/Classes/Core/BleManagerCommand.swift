@@ -39,6 +39,22 @@ public protocol PeripheralDidDisConnect {
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?)
 }
 
+/// 连接目标描述，三种方式覆盖所有连接场景。
+public enum ConnectTarget {
+    /// 按 UUID 字符串连接，适合重连已知设备。
+    /// - Parameter uuid: 外设的 identifier.uuidString
+    /// - Parameter retrieveServices: 可选，先从系统已连接列表中按此 Service UUID 检索，
+    ///   找到则直接连接，避免重复扫描；传 nil 则跳过检索直接扫描。
+    case uuid(String, retrieveServices: [CBUUID]? = nil)
+
+    /// 直接传入 `CBPeripheral` 对象连接，适合扫描回调后立即连接。
+    case peripheral(CBPeripheral)
+
+    /// 按条件自动匹配，扫描过程中第一个满足条件的外设将被自动连接。
+    /// - Parameter predicate: 接收 `PeripheralInfo`，返回 true 表示连接该设备
+    case predicate((PeripheralInfo) -> Bool)
+}
+
 /// 蓝牙管理器命令条目枚举，以 DSL 风格描述扫描、连接等操作的各项配置。
 public enum BleManagerCommandItem {
     /// 扫描时过滤的 Service UUID 列表，传空则扫描所有设备
@@ -47,12 +63,10 @@ public enum BleManagerCommandItem {
     case scanOptions([String: Any])
     /// 外设发现回调处理器
     case discover(DiscoverPeripheral)
-    /// 外设过滤器，用于筛选目标外设
+    /// 外设过滤器，用于筛选显示在列表中的外设
     case filter(PeripheralFilter)
-    /// 要连接的外设 UUID 字符串
-    case connect(uuid: String)
-    /// 通过已连接外设列表检索时使用的 Service UUID 列表
-    case retrieveConnected(services: [CBUUID])
+    /// 连接目标，支持 UUID / CBPeripheral 对象 / 条件匹配三种方式
+    case connect(ConnectTarget)
     /// 连接选项字典，对应 `CBCentralManager.connect` 的 options 参数
     case connectInfo([String : Any])
     /// 连接成功后接收外设对象的处理器
@@ -73,10 +87,8 @@ public struct BleManagerCommand {
     public var discover: DiscoverPeripheral?
     /// 外设过滤器
     public var filter: PeripheralFilter?
-    /// 目标连接外设的 UUID 字符串
-    public var connect: String?
-    /// 通过已连接外设列表检索时使用的 Service UUID 列表
-    public var retrieveConnected: [CBUUID]?
+    /// 连接目标
+    public var connect: ConnectTarget?
     /// 连接选项
     public var connectInfo: [String : Any]?
     /// 连接成功后接收外设的处理器
@@ -98,7 +110,6 @@ public struct BleManagerCommand {
             case .filter(let value): filter = value
             case .connect(let value): connect = value
             case .connectInfo(let value): connectInfo = value
-            case .retrieveConnected(let value): retrieveConnected = value
             case .handle(let value): handle = value
             case .cancelConnect(let value): cancelConnect = value
             case .didDisConnect(let value): didDisConnect = value

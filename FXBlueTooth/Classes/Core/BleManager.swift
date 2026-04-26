@@ -155,26 +155,38 @@ public extension BleManager {
             if let cancelConnect = command?.cancelConnect {
                 // 命令包含断开连接指令，直接断开指定外设
                 centralManager.cancelPeripheralConnection(cancelConnect)
-            } else {
-                if let connect = command?.connect,
-                   let retrieveConnected = command?.retrieveConnected {
-                    // 尝试从系统已连接外设列表中检索目标外设（避免重复扫描）
-                    if let peripheral = centralManager
-                     .retrieveConnectedPeripherals(withServices: retrieveConnected)
-                        .first(where: { $0.identifier.uuidString == connect }) {
-                        // 在系统已连接列表中找到目标外设，直接发起连接
-                        centralManager.connect(peripheral, options: command?.connectInfo)
-                    } else if let peripheral = restorePeripheral.first(where: { $0.identifier.uuidString == connect }) {
-                        // 在状态恢复列表中找到目标外设，直接发起连接
-                        centralManager.connect(peripheral, options: command?.connectInfo)
-                    } else {
-                        // 未找到已连接外设，触发状态检查以启动扫描流程
-                        centralManagerDidUpdateState(centralManager)
-                    }
+                return
+            }
+
+            guard let target = command?.connect else {
+                // 无连接目标，仅触发状态检查（纯扫描场景）
+                centralManagerDidUpdateState(centralManager)
+                return
+            }
+
+            switch target {
+            case .peripheral(let peripheral):
+                // 直接持有外设对象，无需扫描，立即发起连接
+                centralManager.connect(peripheral, options: command?.connectInfo)
+
+            case .uuid(let uuid, let retrieveServices):
+                // 先尝试从系统已连接列表 / 状态恢复列表中找到外设，避免重复扫描
+                if let services = retrieveServices,
+                   let peripheral = centralManager
+                       .retrieveConnectedPeripherals(withServices: services)
+                       .first(where: { $0.identifier.uuidString == uuid }) {
+                    centralManager.connect(peripheral, options: command?.connectInfo)
+                } else if let peripheral = restorePeripheral
+                       .first(where: { $0.identifier.uuidString == uuid }) {
+                    centralManager.connect(peripheral, options: command?.connectInfo)
                 } else {
-                    // 无需检索已连接外设，直接触发状态检查以启动扫描
+                    // 缓存中没有，启动扫描
                     centralManagerDidUpdateState(centralManager)
                 }
+
+            case .predicate:
+                // 条件匹配需要扫描，启动扫描后在 didDiscover 中自动匹配
+                centralManagerDidUpdateState(centralManager)
             }
         }
 
@@ -232,10 +244,22 @@ public extension BleManager {
                 discover.discover(peripheralGroup: discoverPeripheral)
             }
 
-            // 若命令指定了目标连接 UUID，且已发现该外设，则立即发起连接
-            if let connectuuid = command?.connect,
-               let info = discoverPeripheral.first(where: { $0.peripheral.identifier.uuidString == connectuuid }) {
-                central.connect(info.peripheral, options: command?.connectInfo)
+            // 根据连接目标类型决定是否自动发起连接
+            guard let target = command?.connect else { return }
+            switch target {
+            case .uuid(let uuid, _):
+                // 按 UUID 匹配：在已发现列表中找到目标外设后立即连接
+                if let info = discoverPeripheral.first(where: { $0.peripheral.identifier.uuidString == uuid }) {
+                    central.connect(info.peripheral, options: command?.connectInfo)
+                }
+            case .predicate(let match):
+                // 按条件匹配：找到第一个满足条件的外设后立即连接
+                if let info = discoverPeripheral.first(where: { match($0) }) {
+                    central.connect(info.peripheral, options: command?.connectInfo)
+                }
+            case .peripheral:
+                // 直接传入外设对象的场景不走扫描流程，此处无需处理
+                break
             }
         }
 
