@@ -216,12 +216,13 @@ public extension BleManager {
             } else {
                 // 新发现的外设，创建信息对象
                 let info = PeripheralInfo(peripheral: peripheral, advertisementData: advertisementData)
-                if let filter = command?.filter,
-                   let peripheralInfo = filter.filter(peripheralInfo: info) {
-                    // 通过过滤器筛选，使用过滤器返回的（可能经过修改的）外设信息
-                    discoverPeripheral.append(peripheralInfo)
+                if let filter = command?.filter {
+                    if let peripheralInfo = filter.filter(peripheralInfo: info) {
+                        // 通过过滤器筛选，使用过滤器返回的（可能经过修改的）外设信息
+                        discoverPeripheral.append(peripheralInfo)
+                    }
                 } else {
-                    // 无过滤器或过滤器返回 nil 时均添加原始信息
+                    // 无过滤器时添加原始信息
                     discoverPeripheral.append(info)
                 }
             }
