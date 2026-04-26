@@ -4,7 +4,7 @@ import CoreBluetooth
 
 /// 测试用 MockPeripheral，实现 PeripheralProtocol
 @available(iOS 13.0, macOS 10.15, *)
-final class MockPeripheral: PeripheralProtocol {
+final class MockPeripheral: NSObject, PeripheralProtocol {
 
     var identifier: UUID = UUID()
 
@@ -15,7 +15,12 @@ final class MockPeripheral: PeripheralProtocol {
         set { _services = newValue }
     }
 
-    var peripheralDelegate: CBPeripheralDelegate? = nil
+    // 提供 delegate selector，兼容将该对象按 CBPeripheral 使用时的 delegate 读写。
+    @objc dynamic var delegate: CBPeripheralDelegate? = nil
+    var peripheralDelegate: CBPeripheralDelegate? {
+        get { delegate }
+        set { delegate = newValue }
+    }
 
     // 调用记录
     var discoverServicesCalledWith: [CBUUID]?? = nil   // nil = 未调用；.some(nil) = 以 nil 调用
@@ -30,12 +35,15 @@ final class MockPeripheral: PeripheralProtocol {
     var autoCallbackDiscoverCharacteristics: Bool = true
     var autoCallbackReadValue: Bool = true
     var autoCallbackWriteValue: Bool = true
+    var autoCallbackNotificationsOnSubscribe: Bool = false
 
     // 行为注入
     var discoverServicesError: Error? = nil
     var discoverCharacteristicsError: Error? = nil
     var readValueResultByUUID: [CBUUID: Result<Data, Error>] = [:]
     var writeValueErrorByUUID: [CBUUID: Error] = [:]
+    var notificationValuesByUUID: [CBUUID: [Data]] = [:]
+    var notificationIntervalNanoseconds: UInt64 = 5_000_000
 
     func discoverServices(_ serviceUUIDs: [CBUUID]?) {
         discoverServicesCalledWith = .some(serviceUUIDs)
@@ -43,7 +51,7 @@ final class MockPeripheral: PeripheralProtocol {
 
         Task {
             try? await Task.sleep(nanoseconds: 5_000_000)
-            self.emitDiscoverServices(error: self.discoverServicesError)
+            self.notifyDiscoverServices(error: self.discoverServicesError)
         }
     }
 
@@ -53,7 +61,7 @@ final class MockPeripheral: PeripheralProtocol {
 
         Task {
             try? await Task.sleep(nanoseconds: 5_000_000)
-            self.emitDiscoverCharacteristics(for: service, error: self.discoverCharacteristicsError)
+            self.notifyDiscoverCharacteristics(for: service, error: self.discoverCharacteristicsError)
         }
     }
 
@@ -66,12 +74,12 @@ final class MockPeripheral: PeripheralProtocol {
             if let result = self.readValueResultByUUID[characteristic.uuid] {
                 switch result {
                 case .success(let data):
-                    self.emitReadValue(for: characteristic, data: data, error: nil)
+                    self.notifyReadValue(for: characteristic, data: data, error: nil)
                 case .failure(let error):
-                    self.emitReadValue(for: characteristic, data: nil, error: error)
+                    self.notifyReadValue(for: characteristic, data: nil, error: error)
                 }
             } else {
-                self.emitReadValue(for: characteristic, data: characteristic.value, error: nil)
+                self.notifyReadValue(for: characteristic, data: characteristic.value, error: nil)
             }
         }
     }
@@ -82,28 +90,38 @@ final class MockPeripheral: PeripheralProtocol {
 
         Task {
             try? await Task.sleep(nanoseconds: 5_000_000)
-            self.emitWriteValue(for: characteristic, error: self.writeValueErrorByUUID[characteristic.uuid])
+            self.notifyWriteValue(for: characteristic, error: self.writeValueErrorByUUID[characteristic.uuid])
         }
     }
 
     func setNotifyValue(_ enabled: Bool, for characteristic: CBCharacteristic) {
         setNotifyCalledFor = characteristic.uuid
         setNotifyEnabled = enabled
+
+        guard enabled, autoCallbackNotificationsOnSubscribe else { return }
+        let values = notificationValuesByUUID[characteristic.uuid] ?? []
+        for (index, value) in values.enumerated() {
+            Task {
+                let delay = UInt64(index + 1) * self.notificationIntervalNanoseconds
+                try? await Task.sleep(nanoseconds: delay)
+                self.notifyNotificationValue(for: characteristic.uuid, data: value)
+            }
+        }
     }
 
-    // MARK: - Manual Emit
+    // MARK: - Delegate Notifications
 
-    func emitDiscoverServices(error: Error? = nil) {
+    private func notifyDiscoverServices(error: Error? = nil) {
         guard let delegate = peripheralDelegate as? AsyncPeripheral else { return }
         delegate.handleDidDiscoverServices(error: error)
     }
 
-    func emitDiscoverCharacteristics(for service: CBService, error: Error? = nil) {
+    private func notifyDiscoverCharacteristics(for service: CBService, error: Error? = nil) {
         guard let delegate = peripheralDelegate as? AsyncPeripheral else { return }
         delegate.handleDidDiscoverCharacteristics(for: service, error: error)
     }
 
-    func emitReadValue(for characteristic: CBCharacteristic, data: Data? = nil, error: Error? = nil) {
+    private func notifyReadValue(for characteristic: CBCharacteristic, data: Data? = nil, error: Error? = nil) {
         guard let delegate = peripheralDelegate as? AsyncPeripheral else { return }
         let callbackCharacteristic = CBMutableCharacteristic(
             type: characteristic.uuid,
@@ -114,12 +132,12 @@ final class MockPeripheral: PeripheralProtocol {
         delegate.handleDidUpdateValue(for: callbackCharacteristic, error: error)
     }
 
-    func emitWriteValue(for characteristic: CBCharacteristic, error: Error? = nil) {
+    private func notifyWriteValue(for characteristic: CBCharacteristic, error: Error? = nil) {
         guard let delegate = peripheralDelegate as? AsyncPeripheral else { return }
         delegate.handleDidWriteValue(for: characteristic, error: error)
     }
 
-    func emitNotificationValue(for characteristicUUID: CBUUID, data: Data) {
+    private func notifyNotificationValue(for characteristicUUID: CBUUID, data: Data) {
         guard let delegate = peripheralDelegate as? AsyncPeripheral else { return }
         let callbackCharacteristic = CBMutableCharacteristic(
             type: characteristicUUID,

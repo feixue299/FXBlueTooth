@@ -6,6 +6,7 @@ import CoreBluetooth
 @available(iOS 13.0, macOS 10.15, *)
 public protocol CentralManagerProtocol: AnyObject {
     var state: CBManagerState { get }
+    var centralDelegate: CBCentralManagerDelegate? { get set }
     func scanForPeripherals(withServices serviceUUIDs: [CBUUID]?, options: [String: Any]?)
     func stopScan()
     func connect(_ peripheral: CBPeripheral, options: [String: Any]?)
@@ -14,6 +15,11 @@ public protocol CentralManagerProtocol: AnyObject {
 
 @available(iOS 13.0, macOS 10.15, *)
 extension CBCentralManager: CentralManagerProtocol {
+    public var centralDelegate: CBCentralManagerDelegate? {
+        get { delegate }
+        set { delegate = newValue }
+    }
+
     public func cancelPeripheralConnection(_ peripheral: any PeripheralProtocol) {
         if let cbPeripheral = peripheral as? CBPeripheral {
             cancelPeripheralConnection(cbPeripheral)

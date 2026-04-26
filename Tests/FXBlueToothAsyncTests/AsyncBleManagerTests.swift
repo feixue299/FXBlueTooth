@@ -16,9 +16,6 @@ struct AsyncBleManagerStateTests {
         mock.state = .poweredOn
         let manager = AsyncBleManager(central: mock)
 
-        // 先触发状态回调（模拟 CBCentralManager 初始化后的状态通知）
-        manager.handleStateUpdate()
-
         let state = try await manager.getState()
         #expect(state == .poweredOn)
     }
@@ -26,17 +23,17 @@ struct AsyncBleManagerStateTests {
     @Test("getState - 蓝牙关闭时抛出 bluetoothUnavailable")
     func getState_throwsWhenPoweredOff() async throws {
         let mock = MockCentralManager()
-        mock.state = .poweredOff
+        mock.state = .unknown
         let manager = AsyncBleManager(central: mock)
 
-        // 用 Task 驱动 getState（它等待 poweredOn，我们随后触发 stateUpdate(poweredOff)）
+        // 用 Task 驱动 getState（它等待 poweredOn，我们随后切到 poweredOff 触发状态回调）
         let task = Task {
             try await manager.getState()
         }
 
         // 短暂让出，使 task 进入等待
         try await Task.sleep(nanoseconds: 10_000_000)
-        manager.handleStateUpdate()
+        mock.state = .poweredOff
 
         await #expect(throws: AsyncBleClientError.self) {
             try await task.value
@@ -46,14 +43,14 @@ struct AsyncBleManagerStateTests {
     @Test("getState - 蓝牙不支持时抛出 bluetoothUnavailable")
     func getState_throwsWhenUnsupported() async throws {
         let mock = MockCentralManager()
-        mock.state = .unsupported
+        mock.state = .unknown
         let manager = AsyncBleManager(central: mock)
 
         let task = Task {
             try await manager.getState()
         }
         try await Task.sleep(nanoseconds: 10_000_000)
-        manager.handleStateUpdate()
+        mock.state = .unsupported
 
         await #expect(throws: AsyncBleClientError.self) {
             try await task.value
@@ -64,29 +61,45 @@ struct AsyncBleManagerStateTests {
 @Suite("AsyncBleManager 扫描")
 struct AsyncBleManagerScanTests {
 
-    // 创建一个状态为 poweredOn 的 manager（并触发状态通知）
+    private func fakePeripheral() -> CBPeripheral {
+        unsafeBitCast(MockPeripheral(), to: CBPeripheral.self)
+    }
+
+    // 创建一个状态为 poweredOn 的 manager
     private func poweredOnManager() -> (AsyncBleManager, MockCentralManager) {
         let mock = MockCentralManager()
         mock.state = .poweredOn
         let manager = AsyncBleManager(central: mock)
-        manager.handleStateUpdate()
         return (manager, mock)
     }
 
     @Test("scan - 应调用 scanForPeripherals")
     func scan_callsScanForPeripherals() async throws {
         let (manager, mock) = poweredOnManager()
+        mock.autoCallbackConnectResultOnConnect = true
+        mock.autoCallbackDiscoveriesOnScan = true
+        let peripheral = fakePeripheral()
+        mock.discoveriesOnScan = [.init(peripheral: peripheral)]
 
         let scanTask = Task {
             try await manager.scan(
                 AsyncScanRequest(serviceUUIDs: [CBUUID(string: "180A")])
-            ) { _ in .skip }
+            ) { _ in .connect }
         }
 
-        try await Task.sleep(nanoseconds: 10_000_000)
+        _ = try await scanTask.value
+
         #expect(mock.scanWasCalled == true)
         #expect(mock.scanCalledWithServices?.first == CBUUID(string: "180A"))
-        scanTask.cancel()
+        #expect(mock.eventLog == [
+            "didUpdateState",
+            "scanForPeripherals",
+            "didDiscover",
+            "stopScan",
+            "connect",
+            "didConnect",
+            "stopScan"
+        ])
     }
 
     @Test("scan - 任务取消后停止扫描")
@@ -97,9 +110,13 @@ struct AsyncBleManagerScanTests {
             try await manager.scan { _ in .skip }
         }
 
-        try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 30_000_000)
         scanTask.cancel()
         try await Task.sleep(nanoseconds: 10_000_000)
+
+        await #expect(throws: (any Error).self) {
+            try await scanTask.value
+        }
 
         #expect(mock.stopScanCalled == true)
     }
@@ -115,10 +132,18 @@ struct AsyncBleManagerScanTests {
 @Suite("AsyncBleManager 断开连接")
 struct AsyncBleManagerDisconnectTests {
 
+    @Test("init(central:) - 会绑定 centralDelegate")
+    func initWithCentral_bindsDelegate() async throws {
+        let mock = MockCentralManager()
+        let manager = AsyncBleManager(central: mock)
+
+        #expect((mock.centralDelegate as AnyObject?) === (manager as AnyObject))
+    }
+
     @Test("disconnect - 蓝牙关闭时抛出 bluetoothUnavailable")
     func disconnect_throwsWhenPoweredOff() async throws {
         let mock = MockCentralManager()
-        mock.state = .poweredOff
+        mock.state = .unknown
         let manager = AsyncBleManager(central: mock)
         let peripheral = MockPeripheral()
 
@@ -127,7 +152,7 @@ struct AsyncBleManagerDisconnectTests {
         }
 
         try await Task.sleep(nanoseconds: 10_000_000)
-        manager.handleStateUpdate()
+        mock.state = .poweredOff
 
         await #expect(throws: AsyncBleClientError.self) {
             try await task.value
@@ -140,8 +165,8 @@ struct AsyncBleManagerDisconnectTests {
     func disconnect_callsCancelPeripheralConnection() async throws {
         let mock = MockCentralManager()
         mock.state = .poweredOn
+        mock.autoCallbackDisconnectOnCancel = true
         let manager = AsyncBleManager(central: mock)
-        manager.handleStateUpdate()
         let peripheral = MockPeripheral()
 
         let task = Task {
@@ -151,9 +176,8 @@ struct AsyncBleManagerDisconnectTests {
         try await Task.sleep(nanoseconds: 10_000_000)
         // 验证 cancelPeripheralConnection 已被调用
         #expect(mock.cancelConnectionCalledWithIdentifier == peripheral.identifier)
-
-        // 模拟断开事件，让 disconnect 正常返回
-        manager.handleDidDisconnect(peripheral: peripheral, error: nil)
         try await task.value
+        #expect(mock.eventLog.contains("cancelPeripheralConnection"))
+        #expect(mock.eventLog.contains("didDisconnect"))
     }
 }

@@ -152,6 +152,7 @@ struct AsyncPeripheralNotificationTests {
     @Test("notifications - 接收多次数据")
     func notifications_receivesValues() async throws {
         let mock = MockPeripheral()
+        mock.autoCallbackNotificationsOnSubscribe = true
         let ap = AsyncPeripheral(peripheral: mock)
         let char = CBMutableCharacteristic(
             type: CBUUID(string: "2A29"),
@@ -159,6 +160,7 @@ struct AsyncPeripheralNotificationTests {
             value: nil,
             permissions: []
         )
+        mock.notificationValuesByUUID[char.uuid] = [Data([0x01]), Data([0x02]), Data([0x03])]
 
         let stream = ap.notifications(for: char)
         #expect(mock.setNotifyCalledFor == char.uuid)
@@ -170,11 +172,6 @@ struct AsyncPeripheralNotificationTests {
                 received.append(data)
                 if received.count >= 3 { break }
             }
-        }
-
-        for byte: UInt8 in [0x01, 0x02, 0x03] {
-            mock.emitNotificationValue(for: char.uuid, data: Data([byte]))
-            try await Task.sleep(nanoseconds: 5_000_000)
         }
 
         try await task.value

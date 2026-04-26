@@ -4,7 +4,7 @@ import CoreBluetooth
 @available(iOS 13.0, macOS 10.15, *)
 public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
-    // 使用 protocol 类型，允许测试注入 MockCentralManager
+    // 通过协议抽象 central，支持依赖注入与实现解耦
     var central: any CentralManagerProtocol
 
     private var stateWaiters: [CheckedContinuation<Void, Error>] = []
@@ -27,20 +27,21 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         let cm = CBCentralManager()
         self.central = cm
         super.init()
-        cm.delegate = self
+        self.central.centralDelegate = self
     }
 
     public init(options: [String: Any]? = nil) {
         let cm = CBCentralManager(delegate: nil, queue: nil, options: options)
         self.central = cm
         super.init()
-        cm.delegate = self
+        self.central.centralDelegate = self
     }
 
-    /// 测试专用初始化，注入 MockCentralManager
+    /// 内部依赖注入初始化（用于测试或自定义 CentralManager 实现）
     init(central: any CentralManagerProtocol) {
         self.central = central
         super.init()
+        self.central.centralDelegate = self
     }
 
     // MARK: - State
@@ -64,6 +65,11 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
 
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
                 self.scanContinuation = continuation
                 self.scanHandler = onDiscovered
 
@@ -73,11 +79,10 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
                 )
             }
         }, onCancel: {
-            Task {
-                self.central.stopScan()
-                self.scanContinuation = nil
-                self.scanHandler = nil
-            }
+            self.central.stopScan()
+            self.scanContinuation?.resume(throwing: CancellationError())
+            self.scanContinuation = nil
+            self.scanHandler = nil
         })
     }
 
@@ -99,9 +104,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
                 self.scheduleConnectTimeout(timeout)
             }
         }, onCancel: {
-            Task {
-                self.pauseConnectForTaskCancellation()
-            }
+            self.pauseConnectForTaskCancellation()
         })
     }
 
@@ -121,9 +124,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
                 self.central.cancelPeripheralConnection(peripheral)
             }
         }, onCancel: {
-            Task {
-                self.pauseDisconnectForTaskCancellation()
-            }
+            self.pauseDisconnectForTaskCancellation()
         })
     }
 
@@ -145,7 +146,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         scanHandler = nil
     }
 
-    // MARK: - CBCentralManagerDelegate (转发到可测试的 handle 方法)
+    // MARK: - CBCentralManagerDelegate (转发到内部处理方法)
 
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         handleStateUpdate()
@@ -172,7 +173,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         handleDidDisconnect(peripheral: peripheral, error: error)
     }
 
-    // MARK: - Internal Handlers（可在测试中直接调用）
+    // MARK: - Internal Handlers
 
     func handleStateUpdate() {
         switch central.state {
@@ -242,7 +243,7 @@ public final class AsyncBleManager: NSObject, CBCentralManagerDelegate {
         resolveDisconnect(identifier: peripheral.identifier, error: error)
     }
 
-    /// 测试专用：从 MockPeripheral 触发断开回调
+    /// 通过 PeripheralProtocol 触发断开处理（便于注入式调用）
     func handleDidDisconnect(peripheral: any PeripheralProtocol, error: Error?) {
         resolveDisconnect(identifier: peripheral.identifier, error: error)
     }
