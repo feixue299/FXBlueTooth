@@ -1,9 +1,9 @@
 import Foundation
 import CoreBluetooth
 
-/// 已连接的设备对象，提供所有I/O操作
+/// 已连接的设备对象
 @available(iOS 13.0, macOS 10.15, *)
-public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
+public final class AsyncPeripheral: NSObject, CBPeripheralDelegate {
 
     public let peripheral: CBPeripheral
 
@@ -19,11 +19,11 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
         self.peripheral.delegate = self
     }
 
-    // MARK: - Service Discovery
+    // MARK: - Service & Characteristic Discovery
 
-    /// 发现services
-    public func discoverServices(
-        _ serviceUUIDs: [CBUUID]? = nil,
+    /// 发现服务
+    public func discover(
+        serviceUUIDs: [CBUUID]? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> [CBService] {
         guard discoverServicesContinuation == nil else {
@@ -38,11 +38,9 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
         }
     }
 
-    // MARK: - Characteristic Discovery
-
-    /// 为service发现characteristics
-    public func discoverCharacteristics(
-        _ characteristicUUIDs: [CBUUID]? = nil,
+    /// 为 service 发现 characteristics
+    public func discover(
+        characteristicUUIDs: [CBUUID]? = nil,
         for service: CBService,
         timeout: TimeInterval? = nil
     ) async throws -> [CBCharacteristic] {
@@ -60,8 +58,8 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
 
     // MARK: - Read/Write
 
-    /// 读取characteristic的值
-    public func readValue(
+    /// 读取 characteristic 的值
+    public func read(
         for characteristic: CBCharacteristic,
         timeout: TimeInterval? = nil
     ) async throws -> Data {
@@ -77,7 +75,7 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
         }
     }
 
-    /// 写入数据到characteristic
+    /// 写入数据到 characteristic
     public func write(
         _ data: Data,
         to characteristic: CBCharacteristic,
@@ -103,7 +101,7 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
 
     // MARK: - Notifications
 
-    /// 订阅characteristic通知
+    /// 订阅 characteristic 的通知
     public func notifications(
         for characteristic: CBCharacteristic,
         bufferingPolicy: AsyncThrowingStream<Data, Error>.Continuation.BufferingPolicy = .unbounded
@@ -155,7 +153,7 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateValueFor characteristic: CBCharacteristic,
                            error: Error?) {
-        // 如果有读操作在等待
+        // 读操作
         if let continuation = readContinuations.removeValue(forKey: characteristic.uuid) {
             if let error = error {
                 continuation.resume(throwing: AsyncBleClientError.operationFailed(.readValue, error))
@@ -165,7 +163,7 @@ public final class AsyncConnectedPeripheral: NSObject, CBPeripheralDelegate {
             }
         }
 
-        // 如果有通知订阅
+        // 通知订阅
         if let notifyContinuation = notifyContinuations[characteristic.uuid] {
             if let error = error {
                 notifyContinuation.finish(throwing: AsyncBleClientError.operationFailed(.notifications, error))

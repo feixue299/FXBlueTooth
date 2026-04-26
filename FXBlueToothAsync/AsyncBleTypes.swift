@@ -67,6 +67,15 @@ public enum AsyncConnectionEvent {
     case disconnected(CBPeripheral, Error?)
 }
 
+/// 扫描操作的返回状态
+@available(iOS 13.0, macOS 10.15, *)
+public enum ScanAction {
+    /// 跳过当前设备，继续扫描
+    case skip
+    /// 连接该设备，停止扫描
+    case connect
+}
+
 @available(iOS 13.0, macOS 10.15, *)
 public enum AsyncBleClientError: Error {
     public enum Operation {
