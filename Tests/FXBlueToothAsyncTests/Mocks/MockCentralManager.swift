@@ -6,6 +6,8 @@ import CoreBluetooth
 @available(iOS 13.0, macOS 10.15, *)
 final class MockCentralManager: CentralManagerProtocol {
 
+    private final class CallbackCentralCarrier: NSObject {}
+
     enum ConnectionPhase {
         case idle
         case scanning
@@ -66,8 +68,8 @@ final class MockCentralManager: CentralManagerProtocol {
     var autoCallbackDiscoveriesOnScan: Bool = false
     var discoveriesOnScan: [ScanDiscoveryEvent] = []
 
-    // 仅用于满足 delegate 回调签名中的 CBCentralManager 参数
-    private lazy var callbackCentral = CBCentralManager(delegate: nil, queue: nil)
+    // 仅用于满足 delegate 回调签名中的 CBCentralManager 参数，避免测试时触发真实蓝牙权限检查。
+    private lazy var callbackCentral = unsafeBitCast(CallbackCentralCarrier(), to: CBCentralManager.self)
 
     func scanForPeripherals(withServices serviceUUIDs: [CBUUID]?, options: [String: Any]?) {
         scanWasCalled = true

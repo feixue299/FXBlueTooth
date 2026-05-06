@@ -13,8 +13,12 @@ struct AsyncBleManagerStateTests {
     @Test("getState - 蓝牙开启时返回 poweredOn")
     func getState_returnsPoweredOn() async throws {
         let mock = MockCentralManager()
-        mock.state = .poweredOn
+//        mock.state = .poweredOn
         let manager = AsyncBleManager(central: mock)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            mock.state = .poweredOn
+        }
 
         let state = try await manager.getState()
         #expect(state == .poweredOn)
