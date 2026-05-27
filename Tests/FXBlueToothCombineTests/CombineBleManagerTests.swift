@@ -154,6 +154,94 @@ struct CombineBleManagerConnectTests {
         }
     }
 
+    @Test("connectedPeripherals - 连接后 sticky 流发出新列表，断开后移除")
+    func connectedPeripherals_tracksLifecycle() async throws {
+        let mock = MockCentralManager()
+        mock.state = .poweredOn
+        mock.autoCallbackConnectResultOnConnect = true
+        mock.autoCallbackDisconnectOnCancel = true
+        let manager = CombineBleManager(central: mock)
+        let peripheral = fakePeripheral()
+
+        var snapshots: [[CombinePeripheral]] = []
+        var bag = Set<AnyCancellable>()
+        manager.connectedPeripherals
+            .sink { snapshots.append($0) }
+            .store(in: &bag)
+
+        // 初始快照：空
+        #expect(snapshots.first?.isEmpty == true)
+
+        // 连接
+        let cp = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<CombinePeripheral, Error>) in
+            var inner = Set<AnyCancellable>()
+            manager.connect(peripheral)
+                .sink(
+                    receiveCompletion: { if case .failure(let e) = $0 { cont.resume(throwing: e) }; _ = inner },
+                    receiveValue: { cont.resume(returning: $0); inner.removeAll() }
+                )
+                .store(in: &inner)
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+
+        #expect(snapshots.count >= 2)
+        #expect(snapshots.last?.count == 1)
+        #expect(snapshots.last?.first === cp)   // 与 connect() 返回的实例一致
+        #expect(manager.currentConnectedPeripherals.count == 1)
+
+        // 断开
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            var inner = Set<AnyCancellable>()
+            manager.disconnect(cp)
+                .sink(
+                    receiveCompletion: {
+                        switch $0 {
+                        case .finished: cont.resume()
+                        case .failure(let e): cont.resume(throwing: e)
+                        }
+                        _ = inner
+                    },
+                    receiveValue: { _ in }
+                )
+                .store(in: &inner)
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+
+        #expect(snapshots.last?.isEmpty == true)
+        #expect(manager.currentConnectedPeripherals.isEmpty)
+    }
+
+    @Test("connectedPeripherals - 新订阅者立刻拿到当前快照")
+    func connectedPeripherals_sticky() async throws {
+        let mock = MockCentralManager()
+        mock.state = .poweredOn
+        mock.autoCallbackConnectResultOnConnect = true
+        let manager = CombineBleManager(central: mock)
+        let peripheral = fakePeripheral()
+
+        _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<CombinePeripheral, Error>) in
+            var inner = Set<AnyCancellable>()
+            manager.connect(peripheral)
+                .sink(
+                    receiveCompletion: { if case .failure(let e) = $0 { cont.resume(throwing: e) }; _ = inner },
+                    receiveValue: { cont.resume(returning: $0); inner.removeAll() }
+                )
+                .store(in: &inner)
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+
+        // 之后才订阅，也能拿到当前列表
+        let first = await withCheckedContinuation { (cont: CheckedContinuation<[CombinePeripheral], Never>) in
+            var inner = Set<AnyCancellable>()
+            manager.connectedPeripherals
+                .first()
+                .sink { cont.resume(returning: $0); inner.removeAll() }
+                .store(in: &inner)
+        }
+        #expect(first.count == 1)
+        #expect(first.first?.peripheral.identifier == peripheral.identifier)
+    }
+
     @Test("disconnect - cancelPeripheralConnection 后发出完成")
     func disconnect_success() async throws {
         let mock = MockCentralManager()

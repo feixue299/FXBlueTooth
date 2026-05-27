@@ -29,6 +29,7 @@ final class MockPeripheral: NSObject, PeripheralProtocol {
     var setNotifyCalledFor: CBUUID? = nil
     var setNotifyEnabled: Bool? = nil
     var setNotifyLog: [(CBUUID, Bool)] = []
+    var operationLog: [String] = []
 
     // Auto-callback flags
     var autoCallbackDiscoverServices: Bool = true
@@ -41,6 +42,7 @@ final class MockPeripheral: NSObject, PeripheralProtocol {
     var discoverCharacteristicsError: Error? = nil
     var readValueResultByUUID: [CBUUID: Result<Data, Error>] = [:]
     var writeValueErrorByUUID: [CBUUID: Error] = [:]
+    var notificationDataOnEnable: Data? = nil
 
     func discoverServices(_ serviceUUIDs: [CBUUID]?) {
         discoverServicesCalledWith = .some(serviceUUIDs)
@@ -92,6 +94,7 @@ final class MockPeripheral: NSObject, PeripheralProtocol {
     func writeValue(_ data: Data, for characteristic: CBCharacteristic, type: CBCharacteristicWriteType) {
         writeValueCalledFor = characteristic.uuid
         writeValueTypeCalledWith = type
+        operationLog.append("write:\(characteristic.uuid.uuidString)")
         guard autoCallbackWriteValue, type == .withResponse else { return }
         Task {
             try? await Task.sleep(nanoseconds: 5_000_000)
@@ -105,6 +108,10 @@ final class MockPeripheral: NSObject, PeripheralProtocol {
         setNotifyCalledFor = characteristic.uuid
         setNotifyEnabled = enabled
         setNotifyLog.append((characteristic.uuid, enabled))
+        operationLog.append("notify:\(enabled):\(characteristic.uuid.uuidString)")
+        if enabled, let notificationDataOnEnable {
+            push(notification: notificationDataOnEnable, for: characteristic)
+        }
     }
 
     /// Test helper: push a notification value

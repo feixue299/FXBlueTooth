@@ -21,6 +21,11 @@ public final class CombineBleManager {
     private var lastScanServices: [CBUUID]? = nil
     private var lastScanOptions: [String: Any]? = nil
 
+    /// 当前已连接外设注册表，按 identifier 去重
+    private var connectedRegistry: [UUID: CombinePeripheral] = [:]
+    private let connectedSubject = CurrentValueSubject<[CombinePeripheral], Never>([])
+    private var registryBag = Set<AnyCancellable>()
+
     public init(central: CentralManagerProtocol? = nil,
                 queue: DispatchQueue = DispatchQueue(label: "FXBlueToothCombine.central")) {
         self.queue = queue
@@ -28,6 +33,47 @@ public final class CombineBleManager {
         self.bridge = CentralDelegateBridge()
         self.bridge.manager = self
         self.central.centralDelegate = bridge
+        wireConnectedRegistry()
+    }
+
+    private func wireConnectedRegistry() {
+        bridge.didConnect
+            .sink { [weak self] peripheral in
+                self?.registerConnected(peripheral)
+            }
+            .store(in: &registryBag)
+
+        bridge.didDisconnect
+            .sink { [weak self] (peripheral, _) in
+                self?.unregisterConnected(identifier: peripheral.identifier)
+            }
+            .store(in: &registryBag)
+    }
+
+    @discardableResult
+    private func registerConnected(_ peripheral: any PeripheralProtocol) -> CombinePeripheral {
+        lock.lock()
+        if let existing = connectedRegistry[peripheral.identifier] {
+            lock.unlock()
+            return existing
+        }
+        let wrapped = CombinePeripheral(peripheral: peripheral, queue: queue)
+        connectedRegistry[peripheral.identifier] = wrapped
+        let snapshot = Array(connectedRegistry.values)
+        lock.unlock()
+        connectedSubject.send(snapshot)
+        return wrapped
+    }
+
+    private func unregisterConnected(identifier: UUID) {
+        lock.lock()
+        guard connectedRegistry.removeValue(forKey: identifier) != nil else {
+            lock.unlock()
+            return
+        }
+        let snapshot = Array(connectedRegistry.values)
+        lock.unlock()
+        connectedSubject.send(snapshot)
     }
 
     var centralState: CBManagerState { central.state }
@@ -44,6 +90,22 @@ public final class CombineBleManager {
         let connects = bridge.didConnect.map { ConnectionEvent.connected($0) }
         let disconnects = bridge.didDisconnect.map { ConnectionEvent.disconnected($0.0, $0.1) }
         return connects.merge(with: disconnects).eraseToAnyPublisher()
+    }
+
+    /// 当前所有已连接外设的快照流
+    ///
+    /// - 粘性：订阅时立刻拿到当前已连接列表
+    /// - 自动维护：连接成功 → 加入；断开 → 移除
+    /// - 同一 identifier 的外设全局唯一，与 `connect()` 返回的实例一致
+    public var connectedPeripherals: AnyPublisher<[CombinePeripheral], Never> {
+        connectedSubject.eraseToAnyPublisher()
+    }
+
+    /// 当前快照（非响应式访问，便于命令式查询）
+    public var currentConnectedPeripherals: [CombinePeripheral] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(connectedRegistry.values)
     }
 
     // MARK: - Scan
@@ -103,7 +165,11 @@ public final class CombineBleManager {
         let central = self.central
         let success = bridge.didConnect
             .filter { $0.identifier == peripheral.identifier }
-            .map { CombinePeripheral(peripheral: $0, queue: queue) }
+            .map { [weak self] p -> CombinePeripheral in
+                // 复用注册表内的实例（在 wireConnectedRegistry 中已加入），保证全局唯一
+                self?.registerConnected(p)
+                    ?? CombinePeripheral(peripheral: p, queue: queue)
+            }
             .setFailureType(to: BleError.self)
 
         let failure = bridge.didFailToConnect

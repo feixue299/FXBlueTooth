@@ -145,6 +145,130 @@ struct CombinePeripheralIOTests {
         #expect(mock.writeValueCalledFor == ch.uuid)
         #expect(mock.writeValueTypeCalledWith == .withoutResponse)
     }
+
+    @Test("writeWithoutResponse awaiting notification - 先订阅后写入并只返回匹配应答")
+    func write_withoutResponseAwaitingMatchedNotification() async throws {
+        let mock = MockPeripheral()
+        let cp = CombinePeripheral(peripheral: mock)
+        let write = makeCharacteristic("BF03", props: [.writeWithoutResponse])
+        let notify = makeCharacteristic("BF02", props: [.notify])
+
+        let response: Data = try await withCheckedThrowingContinuation { cont in
+            var bag = Set<AnyCancellable>()
+            cp.writeWithoutResponse(
+                Data([0xAA, 0x10]),
+                to: write,
+                awaiting: notify,
+                timeout: 1,
+                matching: { $0.first == 0x10 }
+            )
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure(let error) = completion {
+                        cont.resume(throwing: error)
+                    }
+                    _ = bag
+                },
+                receiveValue: {
+                    cont.resume(returning: $0)
+                    bag.removeAll()
+                }
+            )
+            .store(in: &bag)
+
+            Task {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+                mock.push(notification: Data([0x20]), for: notify)
+                mock.push(notification: Data([0x10, 0x01]), for: notify)
+            }
+        }
+
+        #expect(response == Data([0x10, 0x01]))
+        #expect(mock.writeValueTypeCalledWith == .withoutResponse)
+        #expect(mock.operationLog.prefix(2) == ["notify:true:BF02", "write:BF03"])
+    }
+
+    @Test("writeWithoutResponse awaiting notification - 不匹配写入之前到达的同功能码数据")
+    func write_withoutResponseIgnoresMatchedNotificationBeforeWrite() async throws {
+        let mock = MockPeripheral()
+        mock.notificationDataOnEnable = Data([0x10, 0x00])
+        let cp = CombinePeripheral(peripheral: mock)
+        let write = makeCharacteristic("BF03", props: [.writeWithoutResponse])
+        let notify = makeCharacteristic("BF02", props: [.notify])
+
+        let response: Data = try await withCheckedThrowingContinuation { cont in
+            var bag = Set<AnyCancellable>()
+            cp.writeWithoutResponse(
+                Data([0xAA, 0x10]),
+                to: write,
+                awaiting: notify,
+                timeout: 1,
+                matching: { $0.first == 0x10 }
+            )
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure(let error) = completion {
+                        cont.resume(throwing: error)
+                    }
+                    _ = bag
+                },
+                receiveValue: {
+                    cont.resume(returning: $0)
+                    bag.removeAll()
+                }
+            )
+            .store(in: &bag)
+
+            Task {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+                mock.push(notification: Data([0x10, 0x01]), for: notify)
+            }
+        }
+
+        #expect(response == Data([0x10, 0x01]))
+    }
+
+    @Test("writeWithoutResponse awaiting notification - 不关闭已有持续通知订阅")
+    func write_withoutResponsePreservesExistingNotificationSubscriber() async throws {
+        let mock = MockPeripheral()
+        let cp = CombinePeripheral(peripheral: mock)
+        let write = makeCharacteristic("BF03", props: [.writeWithoutResponse])
+        let notify = makeCharacteristic("BF02", props: [.notify])
+        var liveSubscription: AnyCancellable? = cp.notifications(for: notify)
+            .sink(receiveCompletion: { _ in }, receiveValue: { _ in })
+
+        let response: Data = try await withCheckedThrowingContinuation { cont in
+            var transaction: AnyCancellable?
+            transaction = cp.writeWithoutResponse(
+                Data([0xAA, 0x10]),
+                to: write,
+                awaiting: notify,
+                timeout: 1,
+                matching: { $0.first == 0x10 }
+            )
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure(let error) = completion {
+                        cont.resume(throwing: error)
+                    }
+                    _ = transaction
+                },
+                receiveValue: { cont.resume(returning: $0) }
+            )
+
+            Task {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+                mock.push(notification: Data([0x10]), for: notify)
+            }
+        }
+
+        #expect(response == Data([0x10]))
+        #expect(!mock.setNotifyLog.contains(where: { $0.1 == false }))
+
+        liveSubscription?.cancel()
+        liveSubscription = nil
+        #expect(mock.setNotifyLog.contains(where: { $0.1 == false }))
+    }
 }
 
 @Suite("CombinePeripheral - notifications")
@@ -192,8 +316,8 @@ struct CombinePeripheralNotifyTests {
         #expect(received == Data([0xAB]))
     }
 
-    @Test("notifications - 两个独立订阅者各自 setNotifyValue")
-    func notify_independentSubscribers() async throws {
+    @Test("notifications - 多个订阅者共享 notify，最后取消时关闭")
+    func notify_sharedAmongSubscribers() async throws {
         let mock = MockPeripheral()
         let cp = CombinePeripheral(peripheral: mock)
         let ch = CBMutableCharacteristic(type: CBUUID(string: "2A37"),
@@ -206,6 +330,14 @@ struct CombinePeripheralNotifyTests {
 
         try await Task.sleep(nanoseconds: 5_000_000)
         let enables = mock.setNotifyLog.filter { $0.1 == true }.count
-        #expect(enables == 2)
+        #expect(enables == 1)
+
+        bag1.removeAll()
+        try await Task.sleep(nanoseconds: 5_000_000)
+        #expect(!mock.setNotifyLog.contains(where: { $0.1 == false }))
+
+        bag2.removeAll()
+        try await Task.sleep(nanoseconds: 5_000_000)
+        #expect(mock.setNotifyLog.contains(where: { $0.1 == false }))
     }
 }

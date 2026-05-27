@@ -12,6 +12,8 @@ public final class CombinePeripheral {
     public let peripheral: any PeripheralProtocol
     private let queue: DispatchQueue
     let bridge: PeripheralDelegateBridge
+    private let notificationLock = NSLock()
+    private var notificationSubscriberCounts: [CBUUID: Int] = [:]
 
     public init(peripheral: any PeripheralProtocol,
                 queue: DispatchQueue = DispatchQueue(label: "FXBlueToothCombine.peripheral")) {
@@ -124,14 +126,46 @@ public final class CombinePeripheral {
         }.eraseToAnyPublisher()
     }
 
+    /// 先订阅通知，再使用无响应写入发送命令，并等待写入后首个匹配的通知应答。
+    ///
+    /// 功能码和帧结构属于业务协议，调用方通过 `matcher` 判断通知数据是否为本次应答。
+    /// 此 API 适用于设备通过 notify 对 writeWithoutResponse 命令返回业务响应的场景。
+    public func writeWithoutResponse(_ data: Data,
+                                     to writeCharacteristic: CBCharacteristic,
+                                     awaiting notificationCharacteristic: CBCharacteristic,
+                                     timeout: TimeInterval? = nil,
+                                     matching matcher: @escaping (Data) -> Bool)
+    -> AnyPublisher<Data, BleError> {
+        Deferred { [weak self] () -> AnyPublisher<Data, BleError> in
+            guard let self else {
+                return Fail(error: BleError.cancelled).eraseToAnyPublisher()
+            }
+
+            let gate = NotificationResponseGate(matcher: matcher)
+            let response = self.notifications(for: notificationCharacteristic)
+                .filter { gate.accepts($0) }
+                .first()
+                .handleEvents(receiveSubscription: { _ in
+                    self.peripheral.writeValue(data, for: writeCharacteristic, type: .withoutResponse)
+                    gate.markWriteCompleted()
+                })
+                .eraseToAnyPublisher()
+
+            return CombineBleManager.applyTimeout(response,
+                                                  timeout: timeout,
+                                                  op: .notifications,
+                                                  queue: self.queue)
+        }
+        .eraseToAnyPublisher()
+    }
+
     // MARK: - Notifications
 
-    /// 订阅特征值通知。每次订阅独立调用 `setNotifyValue(true)`，
-    /// 取消时调用 `setNotifyValue(false)`。多订阅者可通过用户层 `.share()` 复用
+    /// 订阅特征值通知。同一 characteristic 的订阅会共享底层 notify 状态，
+    /// 第一个订阅启用通知，最后一个订阅取消时关闭通知。
     public func notifications(for characteristic: CBCharacteristic)
     -> AnyPublisher<Data, BleError> {
         let bridge = self.bridge
-        let peripheral = self.peripheral
         let target = characteristic.uuid
         return Deferred {
             bridge.didUpdateValue
@@ -142,11 +176,14 @@ public final class CombinePeripheral {
                 }
                 .mapError { Self.bleError($0, op: .notifications) }
                 .handleEvents(
-                    receiveSubscription: { _ in
-                        peripheral.setNotifyValue(true, for: characteristic)
+                    receiveSubscription: { [weak self] _ in
+                        self?.beginNotifications(for: characteristic)
+                    },
+                    receiveCompletion: { _ in
+                        self.endNotifications(for: characteristic)
                     },
                     receiveCancel: {
-                        peripheral.setNotifyValue(false, for: characteristic)
+                        self.endNotifications(for: characteristic)
                     }
                 )
         }.eraseToAnyPublisher()
@@ -154,7 +191,61 @@ public final class CombinePeripheral {
 
     // MARK: - Helpers
 
+    private func beginNotifications(for characteristic: CBCharacteristic) {
+        notificationLock.lock()
+        let count = notificationSubscriberCounts[characteristic.uuid, default: 0]
+        notificationSubscriberCounts[characteristic.uuid] = count + 1
+        notificationLock.unlock()
+
+        if count == 0 {
+            peripheral.setNotifyValue(true, for: characteristic)
+        }
+    }
+
+    private func endNotifications(for characteristic: CBCharacteristic) {
+        notificationLock.lock()
+        let count = notificationSubscriberCounts[characteristic.uuid, default: 0]
+        guard count > 0 else {
+            notificationLock.unlock()
+            return
+        }
+        let nextCount = count - 1
+        if nextCount == 0 {
+            notificationSubscriberCounts.removeValue(forKey: characteristic.uuid)
+        } else {
+            notificationSubscriberCounts[characteristic.uuid] = nextCount
+        }
+        notificationLock.unlock()
+
+        if nextCount == 0 {
+            peripheral.setNotifyValue(false, for: characteristic)
+        }
+    }
+
     private static func bleError(_ error: Error, op: BleError.Operation) -> BleError {
         (error as? BleError) ?? .operationFailed(op, error)
+    }
+}
+
+private final class NotificationResponseGate {
+    private let lock = NSLock()
+    private let matcher: (Data) -> Bool
+    private var writeCompleted = false
+
+    init(matcher: @escaping (Data) -> Bool) {
+        self.matcher = matcher
+    }
+
+    func markWriteCompleted() {
+        lock.lock()
+        writeCompleted = true
+        lock.unlock()
+    }
+
+    func accepts(_ data: Data) -> Bool {
+        lock.lock()
+        let mayMatch = writeCompleted
+        lock.unlock()
+        return mayMatch && matcher(data)
     }
 }
