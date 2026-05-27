@@ -63,6 +63,7 @@ open class CentralManagerMultiDelegate: NSObject, CBCentralManagerDelegate {
         delegateGroup.forEach({ $0.value?.centralManager?(central, didDisconnectPeripheral: peripheral, error: error) })
     }
 
+    #if !os(macOS)
     /// 连接事件发生时广播给所有代理（iOS 13+）
     @available(iOS 13.0, *)
     public func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
@@ -74,4 +75,5 @@ open class CentralManagerMultiDelegate: NSObject, CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didUpdateANCSAuthorizationFor peripheral: CBPeripheral) {
         delegateGroup.forEach({ $0.value?.centralManager?(central, didUpdateANCSAuthorizationFor: peripheral) })
     }
+    #endif
 }

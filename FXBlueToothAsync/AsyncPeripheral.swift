@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import FXBlueToothCore
 
 /// 已连接的设备对象，提供所有 I/O 操作
 @available(iOS 13.0, macOS 10.15, *)

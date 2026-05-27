@@ -2,7 +2,7 @@ import Foundation
 import CoreBluetooth
 
 /// CBPeripheral 的可测试抽象
-/// 生产代码使用真实 CBPeripheral，测试代码注入 MockPeripheral
+/// 生产代码使用真实 CBPeripheral，测试代码注入 Mock
 @available(iOS 13.0, macOS 10.15, *)
 public protocol PeripheralProtocol: AnyObject {
     var identifier: UUID { get }
